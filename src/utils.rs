@@ -1,5 +1,4 @@
 pub mod p_hashing {
-    use std::println;
 
     pub fn add_p_hash_for_media(
         p_hash_this: &std::path::Path,
@@ -8,72 +7,114 @@ pub mod p_hashing {
             String,
         >,
     ) {
-        if !p_hash_this.exists() {println!("Error: Path does not exist"); return;}
-
-        let path_str = match p_hash_this.to_str() {
-            Some(s) => s,
-            None => {println!("Error converting path to string"); return;}
-        };
-
-        let c_path = match std::ffi::CString::new(path_str) {
-            Ok(c) => c,
-            Err(_) => {println!("Null byte found in path string"); return;}
-        };
-
-        // Open input stream directly passing the &CString as &CStr via rsmpeg::ffi compatibility
-        unsafe {
-            match rsmpeg::avformat::AVFormatContextInput::open(c_path.as_c_str()) {
-                Ok(mut con) => {
-                    match rsmpeg::avformat::AVFormatContextInput::find_best_stream(
-                        &con,
-                        rsmpeg::ffi::AVMEDIA_TYPE_VIDEO,
-                    ) {
-                        Ok(_) => {
-                            // Locate the first video stream index and corresponding decoder parameters
-                            let s: Option<usize> = con
-                                .streams
-                                .as_mut()
-                                .iter()
-                                .position(|stream: &&mut *mut rsmpeg::ffi::AVStream| {
-                                    stream
-                                        .as_mut()
-                                        .expect("sfds")
-                                        .codecpar
-                                        .as_mut()
-                                        .expect("sdfsd")
-                                        .codec_type
-                                        == rsmpeg::ffi::AVMEDIA_TYPE_VIDEO
-                                });
-
-                            let mut s_i: i32 = -1;
-                            let duration = con.duration;
-                            let target_ts = if duration > 0 { duration / 4 } else { 0 };
-
-                            match s {
-                                Some(stream_index) => {s_i = stream_index as i32;}
-                                None => {println!("Error returning the stream and codec!");}
-                            }
-
-                            match rsmpeg::avformat::AVFormatContextInput::seek(
-                                &mut con,
-                                s_i,
-                                target_ts,
-                                rsmpeg::ffi::AVSEEK_FLAG_BACKWARD as i32,
-                            ) {
-                                Ok(found_frame) => {println!("Found a frame {:#?}", found_frame);}
-                                Err(e) => {println!("Unable to seek a frame {}", e);}
-                            }
-                        }
-
-                        Err(e) => {println!("Error returning the stream and codec!");}
-                    }
-                }
-                Err(e) => {println!("Error creating the AVFormatContext: {:?}", e); return;}
-            };
+        if !p_hash_this.exists() {
+            std::println!("Error: Path does not exist");
+            return;
         }
-        println!("Finished the process for the file {:#?}", p_hash_this);
+
+        let c_path = match std::ffi::CString::new(
+            p_hash_this.to_str().expect("Error converting path to string"),
+        ) {
+            Ok(c) => c,
+            Err(_) => {
+                std::println!("Null byte found in path string");
+                return;
+            }
+        };
+
+
+        let mut format_context = match rsmpeg::avformat::AVFormatContextInput::open(c_path.as_c_str()) {
+            Ok(c) => c,
+            Err(e) => {
+                std::println!("Error: {e}");
+                return;
+            }
+        };
+
+
+        let (stream_index, decoder) = match format_context.find_best_stream(rsmpeg::ffi::AVMEDIA_TYPE_VIDEO) {
+            Ok(Some((idx, decoder))) => (idx, decoder),
+            Ok(None) => {
+                std::println!("No video stream found.");
+                return;
+            }
+            Err(e) => {
+                std::println!("Error finding video stream: {e}");
+                return;
+            }
+        };
+
+
+        let video_stream = &format_context.streams()[stream_index];
+        let mut decode_context = rsmpeg::avcodec::AVCodecContext::new(&decoder);
+        if let Err(e) = decode_context.apply_codecpar(&video_stream.codecpar()) {
+            std::println!("Failed to apply codec parameters: {e}");
+            return;
+        }
+        if let Err(e) = decode_context.open(None) {
+            std::println!("Failed to open decoder: {e}");
+            return;
+        }
+
+
+        let duration = format_context.duration;
+        let target_ts = if duration > 0 { duration / 4 } else { 0 };
+
+        if let Err(e) = format_context.seek(
+            stream_index as i32,
+            target_ts,
+            rsmpeg::ffi::AVSEEK_FLAG_BACKWARD as i32,
+        ) {
+            std::println!("Unable to seek frame: {e}");
+            return;
+        }
+
+
+        let mut frame_decoded = false;
+        while let Ok(Some(packet)) = format_context.read_packet() {
+            if packet.stream_index != stream_index as i32 {
+                continue;
+            }
+
+            if let Err(e) = decode_context.send_packet(Some(&packet)) {
+                std::println!("Error sending packet to decoder: {e}");
+                break;
+            }
+
+            match decode_context.receive_frame() {
+                Ok(frame) => {
+                    std::println!(
+                        "Successfully decoded frame! Dimensions: {}x{}",
+                        frame.width,
+                        frame.height
+                    );
+                    
+                    // `frame` (AVFrame) contains raw image buffer data (e.g. YUV/RGB buffers in `frame.data`)
+                    // Implement perceptual hashing algorithms (e.g., ImageHash / DCT) using the decoded frame data.
+                    frame_decoded = true;
+                    break;
+                }
+                Err(rsmpeg::error::RsmpegError::DecoderFlushedError)
+                | Err(_) => {
+                    continue;
+                }
+                Err(e) => {
+                    std::println!("Error receiving frame from decoder: {e}");
+                    break;
+                }
+            }
+        }
+
+        if !frame_decoded {
+            std::println!("Failed to decode frame after seeking.");
+            return;
+        }
+
+        std::println!("Finished processing file: {:?}", p_hash_this);
     }
 }
+    
+
 
 pub mod s_hashing {
     use sha2::{Digest, digest::array::Array};
@@ -85,12 +126,12 @@ pub mod s_hashing {
         check_here: &mut std::collections::BTreeMap<Array<u8, typenum::U32>, String>,
     ) {
         if let Some(dup) = check_here.get(&hash_to_check) {
-            println!(
+            std::println!(
                 "Found Duplicate: {:#?} is a duplicate of {:#?}",
                 file_name, dup
             );
         } else {
-            println!("New entry {:#?} for {}", hash_to_check, file_name);
+            std::println!("New entry {:#?} for {}", hash_to_check, file_name);
             check_here.insert(hash_to_check, file_name.to_string());
         }
     }
@@ -117,13 +158,13 @@ pub mod s_hashing {
                                     add_here,
                                 );
                             }
-                            Err(e) => {println!("Error {}", e);}
+                            Err(e) => {std::println!("Error {}", e);}
                         }
                     }
-                    Err(e) => {println!("Error {}", e);}
+                    Err(e) => {std::println!("Error {}", e);}
                 }
             }
-            Err(e) => {println!("Error {}", e);}
+            Err(e) => {std::println!("Error {}", e);}
         }
     }
 }
@@ -151,11 +192,11 @@ pub mod misc {
                                     Ok(try_this) => {
                                         go_thru_dir(&mut try_this.path(), add_here, method);
                                     }
-                                    Err(e) => {println!("Error {}", e);}
+                                    Err(e) => {std::println!("Error {}", e);}
                                 }
                             }
                         }
-                        Err(e) => {println!("Error {}", e);}
+                        Err(e) => {std::println!("Error {}", e);}
                     }
                 } else if file_descriptor_info.is_file() {
                     let fd = std::fs::File::open(&walk_thru);
@@ -166,17 +207,17 @@ pub mod misc {
                             } else if method.eq("b") {
                                 utils::s_hashing::add_hash_from_path(&walk_thru, add_here);
                             } else {
-                                println!(
+                                std::println!(
                                     "Unable to match the method {:#?} with one of the options",
                                     method
                                 );
                             }
                         }
-                        Err(e) => {println!("Error in Computing Hash From Path{}", e);}
+                        Err(e) => {std::println!("Error in Computing Hash From Path{}", e);}
                     }
                 }
             }
-            Err(e) => {println!("Error Raised: {:#?}", e);}
+            Err(e) => {std::println!("Error Raised: {:#?}", e);}
         }
     }
 
@@ -192,16 +233,16 @@ pub mod misc {
                 unsafe { libc::setrlimit(libc::RLIMIT_DATA, &mut sys_mut_lim_struct) };
             match set_the_limit {
                 0 => {
-                    println!("Limit has been properly set {:#?}", sys_mut_lim_struct)
+                    std::println!("Limit has been properly set {:#?}", sys_mut_lim_struct)
                 }
                 -1 => {
-                    println!(
+                    std::println!(
                         "An Error has occurred. Try Debugging {:#?}",
                         std::io::Error::last_os_error().raw_os_error()
                     )
                 }
                 _ => {
-                    println!("Something went horribly wrong!");
+                    std::println!("Something went horribly wrong!");
                 }
             }
 
@@ -210,16 +251,16 @@ pub mod misc {
                 unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut sys_mut_lim_struct) };
             match get_the_limit {
                 0 => {
-                    println!(
+                    std::println!(
                         "Limit has been properly retrieved Cur:{:#?}\nMax: {:#?}",
                         sys_mut_lim_struct.rlim_cur, sys_mut_lim_struct.rlim_max
                     )
                 }
                 -1 => {
-                    println!("An Error has occurred. Try Debugging ")
+                    std::println!("An Error has occurred. Try Debugging ")
                 }
                 _ => {
-                    println!("Something went horribly wrong!");
+                    std::println!("Something went horribly wrong!");
                 }
             }
         }
