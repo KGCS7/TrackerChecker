@@ -69,51 +69,101 @@ pub mod p_hashing {
                         frame.height
                     );
 
-                    let image_data:[*mut u8; 8] = frame.data;
-                    let frame_size = unsafe{
-                            let mut clear_data:Vec<u8> = std::vec::Vec::new();
-                            
-                            for ptr in 0..7{
-                                let t: *mut u8 = image_data[ptr];
-                                if t.is_null(){std::println!("Exiting early"); break;}
-                                let mut c_s = std::ffi::CStr::from_ptr(t as *const i8).to_bytes();
-                                match std::io::Read::read_to_end(&mut c_s, &mut clear_data){
-                                    Ok(_)=>{continue;}
-                                    Err(e)=>{std::println!("Error receiving frame from decoder: {e}");return;}
-                                };
-                            }
-                            
+                    // Convert the decoded frame to RGB24 using libswscale via rsmpeg::ffi
+                    let width = frame.width as i32;
+                    let height = frame.height as i32;
 
-                            clear_data.resize(2*clear_data.len(), 0);
+                    // prepare destination buffer (RGB24)
+                    let mut dst_buf: Vec<u8> = vec![0u8; (width as usize) * (height as usize) * 3];
+                    let mut dst_data: [*mut u8; 8] = [std::ptr::null_mut(); 8];
+                    let mut dst_linesize: [i32; 8] = [0; 8];
+                    dst_data[0] = dst_buf.as_mut_ptr();
+                    dst_linesize[0] = (3 * width) as i32;
 
+                    // source pointers and linesizes from the decoded frame
+                    let src_data: [*mut u8; 8] = frame.data;
+                    let src_linesize: [i32; 8] = frame.linesize;
 
-                            match image::save_buffer_with_format(
-                                format!("./tempPics/{:#?}", p_hash_this.file_name().expect("Error extracting name")),
-                                &clear_data,
-                                frame.width as u32,
-                                frame.height as u32,
-                                image::ColorType::Rgb8,
-                                image::ImageFormat::Png
-                            ){
-                                Ok(_)=>{
+                    // determine source pixel format from frame.format (i32)
+                    let src_pix_fmt = unsafe { std::mem::transmute::<i32, rsmpeg::ffi::AVPixelFormat>(frame.format) };
 
-                                }
-                                Err(e)=>{
-                                    match e {
-                                        image::ImageError::IoError(er) =>{
-                                            std::println!("Error saving image extracted and saved in buffer: {er}");}
-                                        _=>{
-                                            std::println!("Error saving image extracted and saved in buffer: {e}");continue;}
-                                        
-                                    }
-                                }
-
-                            }
-                            
-
-                    
+                    // create sws context
+                    let sws_ctx = unsafe {
+                        rsmpeg::ffi::sws_getContext(
+                            width,
+                            height,
+                            src_pix_fmt,
+                            width,
+                            height,
+                            rsmpeg::ffi::AV_PIX_FMT_RGB24,
+                            rsmpeg::ffi::SWS_BILINEAR as i32,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        )
                     };
 
+                    if sws_ctx.is_null() {
+                        std::println!("Failed to create sws context");
+                        return;
+                    }
+
+                    // perform conversion
+                    let ret = unsafe {
+                        rsmpeg::ffi::sws_scale(
+                            sws_ctx,
+                            src_data.as_ptr() as *const *const u8,
+                            src_linesize.as_ptr(),
+                            0,
+                            height,
+                            dst_data.as_mut_ptr() as *mut *mut u8,
+                            dst_linesize.as_ptr(),
+                        )
+                    };
+
+                    // free sws context
+                    unsafe { rsmpeg::ffi::sws_freeContext(sws_ctx) };
+
+                    if ret <= 0 {
+                        std::println!("sws_scale failed or produced no output: {}", ret);
+                        continue;
+                    }
+
+                    // ensure output directory exists
+                    if let Err(e) = std::fs::create_dir_all("./tempDir") {
+                        std::println!("Failed to create ./tempDir: {e}");
+                        continue;
+                    }
+
+                    // build output path: ./tempDir/{originalName}_copy.png
+                    let stem = match p_hash_this.file_stem().and_then(|s| s.to_str().map(|s| s.to_owned())) {
+                        Some(s) => s,
+                        None => {
+                            std::println!("Error extracting file stem");
+                            continue;
+                        }
+                    };
+
+                    let out_path = format!("./tempDir/{}_copy.png", stem);
+
+                    // save buffer as PNG (RGB8)
+                    match image::save_buffer_with_format(
+                        &out_path,
+                        &dst_buf,
+                        width as u32,
+                        height as u32,
+                        image::ColorType::Rgb8,
+                        image::ImageFormat::Png,
+                    ) {
+                        Ok(_) => {
+                            std::println!("Saved image to {}", out_path);
+                        }
+                        Err(e) => {
+                            std::println!("Error saving image: {e}");
+                            continue;
+                        }
+                    }
+                    
 
                     // `frame` (AVFrame) contains raw image buffer data (e.g. YUV/RGB buffers in `frame.data`)
                     // Implement perceptual hashing algorithms (e.g., ImageHash / DCT) using the decoded frame data.
@@ -137,7 +187,6 @@ pub mod p_hashing {
         std::println!("Finished processing file: {:?}", p_hash_this);
     }
 
-    
 }
     
 
