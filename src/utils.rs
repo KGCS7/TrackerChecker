@@ -1,5 +1,6 @@
 pub mod p_hashing {
 
+
     pub fn add_p_hash_for_media(
         p_hash_this: &std::path::Path,
         _check_here: &mut std::collections::BTreeMap<
@@ -7,53 +8,34 @@ pub mod p_hashing {
             String,
         >,
     ) {
-        if !p_hash_this.exists() {
-            std::println!("Error: Path does not exist");
-            return;
-        }
+        if !p_hash_this.exists() {std::println!("Error: Path does not exist"); return;}
 
-        let c_path = match std::ffi::CString::new(
-            p_hash_this.to_str().expect("Error converting path to string"),
-        ) {
+        let c_path = match std::ffi::CString::new(p_hash_this.to_str().expect("Error converting path to string"),) {
             Ok(c) => c,
-            Err(_) => {
-                std::println!("Null byte found in path string");
-                return;
-            }
+            Err(_) => {std::println!("Null byte found in path string"); return;}
         };
 
 
         let mut format_context = match rsmpeg::avformat::AVFormatContextInput::open(c_path.as_c_str()) {
             Ok(c) => c,
-            Err(e) => {
-                std::println!("Error: {e}");
-                return;
-            }
+            Err(e) => {std::println!("Error: {e}"); return;}
         };
 
 
         let (stream_index, decoder) = match format_context.find_best_stream(rsmpeg::ffi::AVMEDIA_TYPE_VIDEO) {
             Ok(Some((idx, decoder))) => (idx, decoder),
-            Ok(None) => {
-                std::println!("No video stream found.");
-                return;
-            }
-            Err(e) => {
-                std::println!("Error finding video stream: {e}");
-                return;
-            }
+            Ok(None) => {std::println!("No video stream found."); return;}
+            Err(e) => {std::println!("Error finding video stream: {e}"); return;}
         };
 
 
         let video_stream = &format_context.streams()[stream_index];
         let mut decode_context = rsmpeg::avcodec::AVCodecContext::new(&decoder);
         if let Err(e) = decode_context.apply_codecpar(&video_stream.codecpar()) {
-            std::println!("Failed to apply codec parameters: {e}");
-            return;
+            std::println!("Failed to apply codec parameters: {e}"); return;
         }
         if let Err(e) = decode_context.open(None) {
-            std::println!("Failed to open decoder: {e}");
-            return;
+            std::println!("Failed to open decoder: {e}"); return;
         }
 
 
@@ -72,9 +54,7 @@ pub mod p_hashing {
 
         let mut frame_decoded = false;
         while let Ok(Some(packet)) = format_context.read_packet() {
-            if packet.stream_index != stream_index as i32 {
-                continue;
-            }
+            if packet.stream_index != stream_index as i32 { continue; }
 
             if let Err(e) = decode_context.send_packet(Some(&packet)) {
                 std::println!("Error sending packet to decoder: {e}");
@@ -84,20 +64,64 @@ pub mod p_hashing {
             match decode_context.receive_frame() {
                 Ok(frame) => {
                     std::println!(
-                        "Successfully decoded frame! Dimensions: {}x{}",
+                        "Successfully decoded frame! Dimensions: {}x{}\n",
                         frame.width,
                         frame.height
                     );
+
+                    let image_data:[*mut u8; 8] = frame.data;
+                    let frame_size = unsafe{
+                            let mut clear_data:Vec<u8> = std::vec::Vec::new();
+                            
+                            for ptr in 0..7{
+                                let t: *mut u8 = image_data[ptr];
+                                if t.is_null(){std::println!("Exiting early"); break;}
+                                let mut c_s = std::ffi::CStr::from_ptr(t as *const i8).to_bytes();
+                                match std::io::Read::read_to_end(&mut c_s, &mut clear_data){
+                                    Ok(_)=>{continue;}
+                                    Err(e)=>{std::println!("Error receiving frame from decoder: {e}");return;}
+                                };
+                            }
+                            
+
+                            clear_data.resize(2*clear_data.len(), 0);
+
+
+                            match image::save_buffer_with_format(
+                                format!("./tempPics/{:#?}", p_hash_this.file_name().expect("Error extracting name")),
+                                &clear_data,
+                                frame.width as u32,
+                                frame.height as u32,
+                                image::ColorType::Rgb8,
+                                image::ImageFormat::Png
+                            ){
+                                Ok(_)=>{
+
+                                }
+                                Err(e)=>{
+                                    match e {
+                                        image::ImageError::IoError(er) =>{
+                                            std::println!("Error saving image extracted and saved in buffer: {er}");}
+                                        _=>{
+                                            std::println!("Error saving image extracted and saved in buffer: {e}");continue;}
+                                        
+                                    }
+                                }
+
+                            }
+                            
+
                     
+                    };
+
+
                     // `frame` (AVFrame) contains raw image buffer data (e.g. YUV/RGB buffers in `frame.data`)
                     // Implement perceptual hashing algorithms (e.g., ImageHash / DCT) using the decoded frame data.
                     frame_decoded = true;
                     break;
                 }
                 Err(rsmpeg::error::RsmpegError::DecoderFlushedError)
-                | Err(_) => {
-                    continue;
-                }
+                | Err(_) => {continue;}
                 Err(e) => {
                     std::println!("Error receiving frame from decoder: {e}");
                     break;
@@ -112,6 +136,8 @@ pub mod p_hashing {
 
         std::println!("Finished processing file: {:?}", p_hash_this);
     }
+
+    
 }
     
 
