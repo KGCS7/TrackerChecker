@@ -1,3 +1,4 @@
+use crate::utils::{misc, p_hashing};
 #[cfg(target_os = "macos")]
 mod utils;
 
@@ -14,7 +15,7 @@ fn main() {
         ).id("bc")
     )
     .get_matches();
-    
+    misc::flush_the_cache();
     let mut file_hash:std::collections::BTreeMap<sha2::digest::array::Array<u8, typenum::U32>, String> = std::collections::BTreeMap::new();
 
     if m.contains_id("pc"){
@@ -40,4 +41,5 @@ fn main() {
             None=>{println!("Error parsing path in P Hash implementation of CLI args");}
         };
     }
+    misc::flush_the_cache();
 }

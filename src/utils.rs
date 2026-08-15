@@ -1,6 +1,8 @@
 pub mod p_hashing {
 
 
+
+
     pub fn add_p_hash_for_media(
         p_hash_this: &std::path::Path,
         _check_here: &mut std::collections::BTreeMap<
@@ -187,6 +189,29 @@ pub mod p_hashing {
         std::println!("Finished processing file: {:?}", p_hash_this);
     }
 
+    pub fn find_collisions(){
+        let mut vec_hash:Vec<img_hash::ImageHash> = std::vec::Vec::new();
+        for file  in  std::fs::read_dir("./tempDir").expect("m"){
+            let curent_file = file.expect("dfs");    
+            let img_open = image::open(curent_file.path()).expect("msg") as image::DynamicImage;
+            let hash_machine = img_hash::HasherConfig::new();
+            let hash_data = hash_machine.to_hasher().hash_image(&img_open);
+            vec_hash.push(hash_data);
+        }
+        for e in 0..(vec_hash.len()/2){
+            
+            let vec1 = vec_hash.get(e).expect("First Image Bits");
+            let vec2 = vec_hash.get(e+1).expect("Second Image Bits");
+            std::println!("Hamming Distance: {}", vec1.dist(vec2));
+
+
+
+        }
+        
+
+
+    }
+
 }
     
 
@@ -246,6 +271,13 @@ pub mod s_hashing {
 
 pub mod misc {
     use crate::utils::{self, p_hashing};
+
+    pub fn flush_the_cache(){
+        match  std::fs::remove_dir_all(std::path::Path::new("./tempDir/")){
+            Ok(_)=>{std::println!("Removed the cached.");}
+            Err(e)=>{std::println!("Error deleting the cached files {e}.");return;}
+        }
+    }
 
     pub fn go_thru_dir(
         walk_thru: &mut std::path::Path,
