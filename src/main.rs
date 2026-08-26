@@ -15,6 +15,12 @@ fn main() {
             -b --bitwise_hash ["Path1 Path2 ... PathN"] "bitwise_hash"
         ).id("bc")
         .num_args(1..)
+    )
+    .arg(
+        clap::arg!(
+            -f --force 
+        ).id("f")
+        .num_args(1).value_parser(["true","false"]).default_missing_value("true").default_value("false")
 
     )
     .get_matches();
