@@ -32,13 +32,11 @@ fn main() {
     if m.contains_id("pc"){
         match m.get_raw("pc") {
             Some(i)=>{
-                for file in i{
-                    utils::misc::go_thru_dir(&mut std::path::PathBuf::from(file), &mut file_hash, "p");
-                }
-                p_hashing::find_collisions();
+                for file in i{utils::misc::go_thru_dir(&mut std::path::PathBuf::from(file), &mut file_hash, "p");}
             }
             None=>{println!("Error parsing path in P Hash implementation of CLI args");}
         };
+        p_hashing::find_collisions();
     }else if m.contains_id("bc") {
         let temp_variable: Option<clap::parser::RawValues<'_>> = m.get_raw("bc");
          match temp_variable {

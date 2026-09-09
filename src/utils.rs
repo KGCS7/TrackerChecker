@@ -1,5 +1,5 @@
 pub mod p_hashing {
-    use crate::utils;
+    use crate::utils::{self, misc};
     use rayon::prelude::*;
 
     struct PHashData {
@@ -176,15 +176,14 @@ pub mod p_hashing {
                                     ffmpeg_sys_next::sws_freeContext(sws_ctx);
 
                                     if ret > 0 {
-                                        let stem = p_hash_this
-                                            .file_stem()
-                                            .and_then(|s| s.to_str())
-                                            .unwrap_or("temp");
 
-                                        let out_path = format!("./tempDir/{}_copy.png", stem);
+                                        let new_mut_string = misc::temp_path_for_p_hash(p_hash_this);
+                                        misc::create_temp_dir(std::path::PathBuf::from(&new_mut_string));
+                                        
+
 
                                         if let Ok(_) = image::save_buffer_with_format(
-                                            &out_path,
+                                            &new_mut_string,
                                             &dst_buf,
                                             width as u32,
                                             height as u32,
@@ -192,6 +191,8 @@ pub mod p_hashing {
                                             image::ImageFormat::Png,
                                         ) {
                                             frame_decoded = true;
+                                        }else {
+                                            
                                         }
                                     }
                                 }
@@ -480,6 +481,31 @@ pub mod s_hashing {
 }
 pub mod misc {
     use crate::utils;
+
+    pub fn create_temp_dir(extract_from_this_path:std::path::PathBuf){
+        let new_dir = extract_from_this_path.parent().expect("msg");
+        if !std::path::Path::is_dir(new_dir){
+            std::fs::create_dir_all(new_dir).expect("msg");
+        }
+    }
+
+    pub fn temp_path_for_p_hash(passed_path:&std::path::Path)-> std::string::String {
+        let mod_path = passed_path.to_path_buf().clone().with_extension("");
+        
+        
+        match mod_path.to_str(){
+            Some(prune_slash_and_dash)=>{  
+                let mut modi_string = std::string::String::from(prune_slash_and_dash);
+                for (i,c) in prune_slash_and_dash.char_indices(){
+                    if i.eq(&0) && "/".eq(&c.to_string()){
+                        std::string::String::remove(&mut modi_string, 0);
+                    }
+                }
+                return std::fmt::format(std::format_args!("./tempDir/{}_copy.png", modi_string));
+            }
+            None=>{return std::string::String::from(mod_path.to_str().expect("msg"));}
+        }
+    }
 
     pub fn flush_the_cache(mode: bool) {
         let t_b: &std::path::Path = std::path::Path::new("./tempDir/");
