@@ -2,234 +2,264 @@ pub mod p_hashing {
     use crate::utils::{self, misc};
     use rayon::prelude::*;
 
-    struct PHashData {
-        image_path: std::path::PathBuf,
-        image_d_hash: fast_dhash::Dhash,
+    pub struct PHashData {
+        pub original_path: std::path::PathBuf,
+        pub temp_path: std::path::PathBuf,
+        pub image_d_hash: fast_dhash::Dhash,
     }
 
-    pub fn add_p_hash_for_media(p_hash_this: &std::path::Path) {
-        if !p_hash_this.exists() { println!("Error: Path does not exist"); return;}
-
-        let temp_dir = std::path::Path::new("./tempDir/");
-        if let Err(e) = std::fs::create_dir_all(temp_dir) {println!("Error creating the temporary directory: {e}"); return;}
-
-        let c_path = match std::ffi::CString::new(p_hash_this.to_str().expect("Error converting path to string")) {
-            Ok(c) => c,
-            Err(_) => {
-                println!("Null byte found in path string");
-                return;
-            }
-        };
+    pub fn add_p_hash_for_media(p_hash_this: &std::path::Path) -> Option<PHashData> {
+        if !p_hash_this.exists() {
+            println!("Error: Path does not exist");
+            return None;
+        }
 
         let extension = p_hash_this.extension().and_then(|ext| ext.to_str()).unwrap_or("");
 
         match extension {
             "png" | "jpg" | "jpeg" => {
+                let temp_dir = std::path::Path::new("./tempDir/");
+                if let Err(e) = std::fs::create_dir_all(temp_dir) {
+                    println!("Error creating the temporary directory: {e}");
+                    return None;
+                }
+
                 let file_name = match p_hash_this.file_name() {
                     Some(name) => name,
                     None => {
                         println!("Problem retrieving the filename");
-                        return;
+                        return None;
                     }
                 };
+
                 let destination = temp_dir.join(file_name);
                 match std::fs::read(p_hash_this) {
                     Ok(bytes) => {
                         if let Err(e) = std::fs::write(&destination, bytes) {
                             println!("Error in transferring file {:#?}: {e}", file_name);
+                            return None;
                         }
                     }
                     Err(e) => {
                         println!("Error reading file {:#?}: {e}", file_name);
+                        return None;
+                    }
+                }
+
+                match image::open(&destination) {
+                    Ok(img) => {
+                        let hash = return_d_hash(img);
+                        Some(PHashData {
+                            original_path: p_hash_this.to_path_buf(),
+                            temp_path: destination,
+                            image_d_hash: hash,
+                        })
+                    }
+                    Err(e) => {
+                        println!("Error opening copied image: {e}");
+                        None
                     }
                 }
             }
-            "mkv" | "mp4" => unsafe {
-                let mut fmt_ctx_ptr: *mut ffmpeg_sys_next::AVFormatContext = std::ptr::null_mut();
-                if ffmpeg_sys_next::avformat_open_input(
-                    &mut fmt_ctx_ptr,
-                    c_path.as_ptr(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                ) < 0
-                {
-                    println!("Error opening video format context");
-                    return;
-                }
+            "mkv" | "mp4" => {
+                let c_path = match std::ffi::CString::new(p_hash_this.to_str().expect("Error converting path to string")) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        println!("Null byte found in path string");
+                        return None;
+                    }
+                };
 
-                if ffmpeg_sys_next::avformat_find_stream_info(fmt_ctx_ptr, std::ptr::null_mut()) < 0 {
-                    println!("Error finding stream info");
-                    ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
-                    return;
-                }
+                unsafe {
+                    let mut fmt_ctx_ptr: *mut ffmpeg_sys_next::AVFormatContext = std::ptr::null_mut();
+                    if ffmpeg_sys_next::avformat_open_input(
+                        &mut fmt_ctx_ptr,
+                        c_path.as_ptr(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    ) < 0
+                    {
+                        println!("Error opening video format context");
+                        return None;
+                    }
 
-                let stream_index = ffmpeg_sys_next::av_find_best_stream(
-                    fmt_ctx_ptr,
-                    ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO,
-                    -1,
-                    -1,
-                    std::ptr::null_mut(),
-                    0,
-                );
+                    if ffmpeg_sys_next::avformat_find_stream_info(fmt_ctx_ptr, std::ptr::null_mut()) < 0 {
+                        println!("Error finding stream info");
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                        return None;
+                    }
 
-                if stream_index < 0 {
-                    println!("No video stream found.");
-                    ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
-                    return;
-                }
+                    let stream_index = ffmpeg_sys_next::av_find_best_stream(
+                        fmt_ctx_ptr,
+                        ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO,
+                        -1,
+                        -1,
+                        std::ptr::null_mut(),
+                        0,
+                    );
 
-                let stream = *(*fmt_ctx_ptr).streams.add(stream_index as usize);
-                let codec_id = (*(*stream).codecpar).codec_id;
-                let decoder = ffmpeg_sys_next::avcodec_find_decoder(codec_id);
+                    if stream_index < 0 {
+                        println!("No video stream found.");
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                        return None;
+                    }
 
-                if decoder.is_null() {
-                    println!("Failed to find decoder.");
-                    ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
-                    return;
-                }
+                    let stream = *(*fmt_ctx_ptr).streams.add(stream_index as usize);
+                    let codec_id = (*(*stream).codecpar).codec_id;
+                    let decoder = ffmpeg_sys_next::avcodec_find_decoder(codec_id);
 
-                let decode_context = ffmpeg_sys_next::avcodec_alloc_context3(decoder);
-                if decode_context.is_null() {
-                    println!("Failed to allocate decoder context.");
-                    ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
-                    return;
-                }
+                    if decoder.is_null() {
+                        println!("Failed to find decoder.");
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                        return None;
+                    }
 
-                if ffmpeg_sys_next::avcodec_parameters_to_context(
-                    decode_context,
-                    (*stream).codecpar,
-                ) < 0
-                {
-                    println!("Failed to apply codec parameters.");
-                    ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
-                    ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
-                    return;
-                }
+                    let decode_context = ffmpeg_sys_next::avcodec_alloc_context3(decoder);
+                    if decode_context.is_null() {
+                        println!("Failed to allocate decoder context.");
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                        return None;
+                    }
 
-                if ffmpeg_sys_next::avcodec_open2(decode_context, decoder, std::ptr::null_mut()) < 0 {
-                    println!("Failed to open decoder.");
-                    ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
-                    ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
-                    return;
-                }
+                    if ffmpeg_sys_next::avcodec_parameters_to_context(
+                        decode_context,
+                        (*stream).codecpar,
+                    ) < 0
+                    {
+                        println!("Failed to apply codec parameters.");
+                        ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                        return None;
+                    }
 
-                let duration = (*fmt_ctx_ptr).duration;
-                let target_ts = if duration > 0 { duration / 4 } else { 0 };
+                    if ffmpeg_sys_next::avcodec_open2(decode_context, decoder, std::ptr::null_mut()) < 0 {
+                        println!("Failed to open decoder.");
+                        ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                        return None;
+                    }
 
-                let _ = ffmpeg_sys_next::av_seek_frame(
-                    fmt_ctx_ptr,
-                    -1,
-                    target_ts,
-                    ffmpeg_sys_next::AVSEEK_FLAG_BACKWARD as i32,
-                );
+                    let duration = (*fmt_ctx_ptr).duration;
+                    let target_ts = if duration > 0 { duration / 4 } else { 0 };
 
-                let packet = ffmpeg_sys_next::av_packet_alloc();
-                let frame = ffmpeg_sys_next::av_frame_alloc();
-                let mut frame_decoded = false;
+                    let _ = ffmpeg_sys_next::av_seek_frame(
+                        fmt_ctx_ptr,
+                        -1,
+                        target_ts,
+                        ffmpeg_sys_next::AVSEEK_FLAG_BACKWARD as i32,
+                    );
 
-                while ffmpeg_sys_next::av_read_frame(fmt_ctx_ptr, packet) >= 0 {
-                    if (*packet).stream_index == stream_index {
-                        if ffmpeg_sys_next::avcodec_send_packet(decode_context, packet) >= 0 {
-                            if ffmpeg_sys_next::avcodec_receive_frame(decode_context, frame) == 0 {
-                                let width = (*frame).width;
-                                let height = (*frame).height;
+                    let packet = ffmpeg_sys_next::av_packet_alloc();
+                    let frame = ffmpeg_sys_next::av_frame_alloc();
+                    let mut result = None;
 
-                                let mut dst_buf =
-                                    vec![0u8; (width as usize) * (height as usize) * 3];
-                                let mut dst_data: [*mut u8; 8] = [std::ptr::null_mut(); 8];
-                                let mut dst_linesize: [i32; 8] = [0; 8];
+                    while ffmpeg_sys_next::av_read_frame(fmt_ctx_ptr, packet) >= 0 {
+                        if (*packet).stream_index == stream_index {
+                            if ffmpeg_sys_next::avcodec_send_packet(decode_context, packet) >= 0 {
+                                if ffmpeg_sys_next::avcodec_receive_frame(decode_context, frame) == 0 {
+                                    let width = (*frame).width;
+                                    let height = (*frame).height;
 
-                                dst_data[0] = dst_buf.as_mut_ptr();
-                                dst_linesize[0] = 3 * width;
+                                    let mut dst_buf = vec![0u8; (width as usize) * (height as usize) * 3];
+                                    let mut dst_data: [*mut u8; 8] = [std::ptr::null_mut(); 8];
+                                    let mut dst_linesize: [i32; 8] = [0; 8];
 
-                                let frame_format: ffmpeg_sys_next::AVPixelFormat;
-                                match frame.as_ref().expect("msg").format {
-                                    num => {
-                                        frame_format = std::mem::transmute(num);
-                                    }
-                                }
+                                    dst_data[0] = dst_buf.as_mut_ptr();
+                                    dst_linesize[0] = 3 * width;
 
-                                let sws_ctx = ffmpeg_sys_next::sws_getContext(
-                                    width,
-                                    height,
-                                    frame_format,
-                                    width,
-                                    height,
-                                    ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
-                                    ffmpeg_sys_next::SwsFlags::SWS_BILINEAR as i32,
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                );
-
-                                if !sws_ctx.is_null() {
-                                    let ret = ffmpeg_sys_next::sws_scale(
-                                        sws_ctx,
-                                        (*frame).data.as_ptr() as *const *const u8,
-                                        (*frame).linesize.as_ptr(),
-                                        0,
-                                        height,
-                                        dst_data.as_mut_ptr(),
-                                        dst_linesize.as_ptr(),
-                                    );
-
-                                    ffmpeg_sys_next::sws_freeContext(sws_ctx);
-
-                                    if ret > 0 {
-
-                                        let new_mut_string = misc::temp_path_for_p_hash(p_hash_this);
-                                        misc::create_temp_dir(std::path::PathBuf::from(&new_mut_string));
-                                        
-
-
-                                        if let Ok(_) = image::save_buffer_with_format(
-                                            &new_mut_string,
-                                            &dst_buf,
-                                            width as u32,
-                                            height as u32,
-                                            image::ColorType::Rgb8,
-                                            image::ImageFormat::Png,
-                                        ) {
-                                            frame_decoded = true;
-                                        }else {
-                                            
+                                    let frame_format: ffmpeg_sys_next::AVPixelFormat;
+                                    match frame.as_ref().expect("msg").format {
+                                        num => {
+                                            frame_format = std::mem::transmute(num);
                                         }
                                     }
+
+                                    let sws_ctx = ffmpeg_sys_next::sws_getContext(
+                                        width,
+                                        height,
+                                        frame_format,
+                                        width,
+                                        height,
+                                        ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
+                                        ffmpeg_sys_next::SwsFlags::SWS_BILINEAR as i32,
+                                        std::ptr::null_mut(),
+                                        std::ptr::null_mut(),
+                                        std::ptr::null_mut(),
+                                    );
+
+                                    if !sws_ctx.is_null() {
+                                        let ret = ffmpeg_sys_next::sws_scale(
+                                            sws_ctx,
+                                            (*frame).data.as_ptr() as *const *const u8,
+                                            (*frame).linesize.as_ptr(),
+                                            0,
+                                            height,
+                                            dst_data.as_mut_ptr(),
+                                            dst_linesize.as_ptr(),
+                                        );
+
+                                        ffmpeg_sys_next::sws_freeContext(sws_ctx);
+
+                                        if ret > 0 {
+                                            let temp_path = std::path::PathBuf::from(&misc::temp_path_for_p_hash(p_hash_this));
+                                            misc::create_temp_dir(temp_path.clone());
+
+                                            if image::save_buffer_with_format(
+                                                &temp_path,
+                                                &dst_buf,
+                                                width as u32,
+                                                height as u32,
+                                                image::ColorType::Rgb8,
+                                                image::ImageFormat::Png,
+                                            ).is_ok() {
+                                                if let Ok(img) = image::open(&temp_path) {
+                                                    let hash = return_d_hash(img);
+                                                    result = Some(PHashData {
+                                                        original_path: p_hash_this.to_path_buf(),
+                                                        temp_path,
+                                                        image_d_hash: hash,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ffmpeg_sys_next::av_packet_unref(packet);
+                                    break;
                                 }
-                                ffmpeg_sys_next::av_packet_unref(packet);
-                                break;
                             }
                         }
+                        ffmpeg_sys_next::av_packet_unref(packet);
                     }
-                    ffmpeg_sys_next::av_packet_unref(packet);
-                }
 
-                ffmpeg_sys_next::av_frame_free(&mut (frame as *mut _));
-                ffmpeg_sys_next::av_packet_free(&mut (packet as *mut _));
-                ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
-                ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                    ffmpeg_sys_next::av_frame_free(&mut (frame as *mut _));
+                    ffmpeg_sys_next::av_packet_free(&mut (packet as *mut _));
+                    ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
+                    ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
 
-                if !frame_decoded {
-                    println!("Failed to decode frame after seeking.");
+                    if result.is_none() {
+                        println!("Failed to decode frame after seeking.");
+                    }
+
+                    result
                 }
-            },
+            }
             _ => {
                 println!("Unsupported file type");
+                None
             }
         }
     }
 
     pub fn find_collisions() {
-        let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir("./tempDir") {
-            Ok(rd) => rd.filter_map(Result::ok).collect(),
-            Err(e) => {
-                println!("Wasn't able to find or read ./tempDir: {e}");
-                return;
-            }
-        };
+        let file_paths = collect_files_recursively(std::path::Path::new("./tempDir"));
 
-        let processed_images = process_entries_parallel(&entries[..]);
-        let store_dup = compare_hashes_parallel(&processed_images[..]);
+        if file_paths.is_empty() {
+            println!("No files found in ./tempDir");
+            return;
+        }
+
+        let processed_images = process_entries_parallel(&file_paths);
+        let store_dup = compare_hashes_parallel(&processed_images);
 
         if let Ok(r_d) = std::fs::read_dir(".") {
             for subdir in r_d.flatten() {
@@ -247,35 +277,41 @@ pub mod p_hashing {
         }
     }
 
-    fn process_entries_parallel(entries: &[std::fs::DirEntry]) -> Vec<PHashData> {
-        if entries.is_empty() {
-            return Vec::new();
-        }
-        if entries.len() == 1 {
-            let entry = &entries[0];
-            let path = entry.path();
-            println!("Current File we are processing: {:#?}", entry.file_name());
-
-            if let Ok(img_open) = image::open(&path) {
-                let img_hash = utils::p_hashing::return_d_hash(img_open);
-                return vec![PHashData {
-                    image_path: path,
-                    image_d_hash: img_hash,
-                }];
+    fn collect_files_recursively(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.extend(collect_files_recursively(&path));
+                } else if path.is_file() {
+                    files.push(path);
+                }
             }
-            return Vec::new();
         }
+        files
+    }
 
-        let mid = entries.len() / 2;
-        let (left, right) = entries.split_at(mid);
-
-        let (mut left_res, right_res) = rayon::join(
-            || process_entries_parallel(left),
-            || process_entries_parallel(right),
-        );
-
-        left_res.extend(right_res);
-        left_res
+    fn process_entries_parallel(file_paths: &[std::path::PathBuf]) -> Vec<PHashData> {
+        file_paths
+            .par_iter()
+            .filter_map(|path| {
+                if let Some(file_name) = path.file_name() {
+                    println!("Current File we are processing: {:#?}", file_name);
+                }
+                match image::open(path) {
+                    Ok(img_open) => {
+                        let img_hash = utils::p_hashing::return_d_hash(img_open);
+                        Some(PHashData {
+                            original_path: path.clone(),
+                            temp_path: std::path::PathBuf::from(misc::temp_path_for_p_hash(path)),
+                            image_d_hash: img_hash,
+                        })
+                    }
+                    Err(_) => None,
+                }
+            })
+            .collect()
     }
 
     fn compare_hashes_parallel(images: &[PHashData]) -> Vec<std::path::PathBuf> {
@@ -293,9 +329,9 @@ pub mod p_hashing {
                     if similarity >= 0.90 {
                         println!(
                             "\tFound similarity comparing {:?} to {:?}",
-                            comp.image_path, target.image_path
+                            comp.temp_path, target.temp_path
                         );
-                        Some(target.image_path.clone())
+                        Some(target.original_path.clone())
                     } else {
                         None
                     }
@@ -400,6 +436,13 @@ pub mod p_hashing {
                             println!("Error opening file for preview: {e}");
                         }
                     }
+                    #[cfg(target_os = "windows")]
+                    {
+                        if let Err(e) = std::process::Command::new("cmd").args(["/C", "start", "", target_path.to_str().unwrap_or("")]).spawn()
+                        {
+                            println!("Error opening file for preview: {e}");
+                        }
+                    }
                     should_delete = true;
                 }
 
@@ -480,33 +523,51 @@ pub mod s_hashing {
     }
 }
 pub mod misc {
-    use crate::utils;
+    use std::str::FromStr;
 
-    pub fn create_temp_dir(extract_from_this_path:std::path::PathBuf){
-        let new_dir = extract_from_this_path.parent().expect("msg");
-        if !std::path::Path::is_dir(new_dir){
-            std::fs::create_dir_all(new_dir).expect("msg");
-        }
-    }
+use crate::utils;
 
-    pub fn temp_path_for_p_hash(passed_path:&std::path::Path)-> std::string::String {
-        let mod_path = passed_path.to_path_buf().clone().with_extension("");
-        
-        
-        match mod_path.to_str(){
-            Some(prune_slash_and_dash)=>{  
-                let mut modi_string = std::string::String::from(prune_slash_and_dash);
-                for (i,c) in prune_slash_and_dash.char_indices(){
-                    if i.eq(&0) && "/".eq(&c.to_string()){
-                        std::string::String::remove(&mut modi_string, 0);
-                    }
-                }
-                return std::fmt::format(std::format_args!("./tempDir/{}_copy.png", modi_string));
+   pub fn create_temp_dir(extract_from_this_path: std::path::PathBuf) {
+        if let Some(new_dir) = extract_from_this_path.parent() {
+            if !new_dir.is_dir() {
+                std::fs::create_dir_all(new_dir).expect("msg");
             }
-            None=>{return std::string::String::from(mod_path.to_str().expect("msg"));}
         }
     }
 
+    pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
+        let mut path_str = String::new();
+
+        for component in passed_path.components() {
+            if let std::path::Component::Normal(os_str) = component {
+                if let Some(s) = os_str.to_str() {
+                    if !path_str.is_empty() {
+                        path_str.push('_');
+                    }
+                    path_str.push_str(s);
+                }
+            }
+        }
+
+        if let Some(stem) = passed_path.file_stem().and_then(|s| s.to_str()) {
+            if let Some(idx) = path_str.rfind(stem) {
+                path_str.truncate(idx + stem.len());
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            path_str = path_str.replace('\\', "_");
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            path_str = path_str.replace('/', "_");
+        }
+
+        format!("./tempDir/{} copy.png", path_str)
+    }
+    
     pub fn flush_the_cache(mode: bool) {
         let t_b: &std::path::Path = std::path::Path::new("./tempDir/");
         if mode.eq(&true) {
