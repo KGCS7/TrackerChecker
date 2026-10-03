@@ -1,5 +1,5 @@
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::utils::{misc, p_hashing};
-#[cfg(target_os = "macos")]
 mod utils;
 
 fn main() {

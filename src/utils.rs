@@ -8,7 +8,7 @@ pub mod p_hashing {
         pub image_d_hash: fast_dhash::Dhash,
     }
 
-    pub fn add_p_hash_for_media(p_hash_this: &std::path::Path) -> Option<PHashData> {
+    pub fn add_p_hash_for_media(p_hash_this: &std::path::Path) -> Option<std::path::PathBuf> {
         if !p_hash_this.exists() {
             println!("Error: Path does not exist");
             return None;
@@ -39,25 +39,11 @@ pub mod p_hashing {
                             println!("Error in transferring file {:#?}: {e}", file_name);
                             return None;
                         }
+                        Some(destination)
                     }
                     Err(e) => {
                         println!("Error reading file {:#?}: {e}", file_name);
                         return None;
-                    }
-                }
-
-                match image::open(&destination) {
-                    Ok(img) => {
-                        let hash = return_d_hash(img);
-                        Some(PHashData {
-                            original_path: p_hash_this.to_path_buf(),
-                            temp_path: destination,
-                            image_d_hash: hash,
-                        })
-                    }
-                    Err(e) => {
-                        println!("Error opening copied image: {e}");
-                        None
                     }
                 }
             }
@@ -141,22 +127,76 @@ pub mod p_hashing {
 
                     let duration = (*fmt_ctx_ptr).duration;
                     let target_ts = if duration > 0 { duration / 4 } else { 0 };
-
-                    let _ = ffmpeg_sys_next::av_seek_frame(
-                        fmt_ctx_ptr,
-                        -1,
+                    let stream_time_base = (*stream).time_base;
+                    let mut target_stream_ts = ffmpeg_sys_next::av_rescale_q(
                         target_ts,
+                        ffmpeg_sys_next::AVRational {
+                            num: 1,
+                            den: ffmpeg_sys_next::AV_TIME_BASE,
+                        },
+                        stream_time_base,
+                    );
+                    if (*stream).start_time != ffmpeg_sys_next::AV_NOPTS_VALUE {
+                        target_stream_ts += (*stream).start_time;
+                    }
+
+                    let seek_result = ffmpeg_sys_next::av_seek_frame(
+                        fmt_ctx_ptr,
+                        stream_index,
+                        target_stream_ts,
                         ffmpeg_sys_next::AVSEEK_FLAG_BACKWARD as i32,
                     );
+                    if seek_result < 0 {
+                        println!("Unable to seek to a video keyframe; decoding from the beginning.");
+                        let start_time = if (*stream).start_time == ffmpeg_sys_next::AV_NOPTS_VALUE {
+                            0
+                        } else {
+                            (*stream).start_time
+                        };
+                        let fallback_seek_result = ffmpeg_sys_next::av_seek_frame(
+                            fmt_ctx_ptr,
+                            stream_index,
+                            start_time,
+                            ffmpeg_sys_next::AVSEEK_FLAG_BACKWARD as i32,
+                        );
+                        if fallback_seek_result < 0 {
+                            println!(
+                                "Failed to seek to the beginning of the video: FFmpeg error {fallback_seek_result}."
+                            );
+                            ffmpeg_sys_next::avcodec_free_context(
+                                &mut (decode_context as *mut _),
+                            );
+                            ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                            return None;
+                        }
+                    }
+                    ffmpeg_sys_next::avcodec_flush_buffers(decode_context);
 
                     let packet = ffmpeg_sys_next::av_packet_alloc();
                     let frame = ffmpeg_sys_next::av_frame_alloc();
                     let mut result = None;
 
+                    if packet.is_null() || frame.is_null() {
+                        println!("Failed to allocate video packet or frame.");
+                        if !packet.is_null() {
+                            ffmpeg_sys_next::av_packet_free(&mut (packet as *mut _));
+                        }
+                        if !frame.is_null() {
+                            ffmpeg_sys_next::av_frame_free(&mut (frame as *mut _));
+                        }
+                        ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                        return None;
+                    }
+
                     while ffmpeg_sys_next::av_read_frame(fmt_ctx_ptr, packet) >= 0 {
                         if (*packet).stream_index == stream_index {
-                            if ffmpeg_sys_next::avcodec_send_packet(decode_context, packet) >= 0 {
-                                if ffmpeg_sys_next::avcodec_receive_frame(decode_context, frame) == 0 {
+                            let send_result =
+                                ffmpeg_sys_next::avcodec_send_packet(decode_context, packet);
+                            if send_result >= 0 {
+                                while ffmpeg_sys_next::avcodec_receive_frame(decode_context, frame)
+                                    == 0
+                                {
                                     let width = (*frame).width;
                                     let height = (*frame).height;
 
@@ -212,23 +252,20 @@ pub mod p_hashing {
                                                 image::ColorType::Rgb8,
                                                 image::ImageFormat::Png,
                                             ).is_ok() {
-                                                if let Ok(img) = image::open(&temp_path) {
-                                                    let hash = return_d_hash(img);
-                                                    result = Some(PHashData {
-                                                        original_path: p_hash_this.to_path_buf(),
-                                                        temp_path,
-                                                        image_d_hash: hash,
-                                                    });
-                                                }
+                                                result = Some(temp_path);
                                             }
                                         }
                                     }
                                     ffmpeg_sys_next::av_packet_unref(packet);
+                                    ffmpeg_sys_next::av_frame_unref(frame);
                                     break;
                                 }
                             }
                         }
                         ffmpeg_sys_next::av_packet_unref(packet);
+                        if result.is_some() {
+                            break;
+                        }
                     }
 
                     ffmpeg_sys_next::av_frame_free(&mut (frame as *mut _));
@@ -244,7 +281,7 @@ pub mod p_hashing {
                 }
             }
             _ => {
-                println!("Unsupported file type");
+                // println!("Unsupported file type");
                 None
             }
         }
@@ -308,7 +345,10 @@ pub mod p_hashing {
                             image_d_hash: img_hash,
                         })
                     }
-                    Err(_) => None,
+                    Err(e) => {
+                        println!("Error opening image for perceptual hashing {path:?}: {e}");
+                        None
+                    }
                 }
             })
             .collect()
@@ -322,8 +362,8 @@ pub mod p_hashing {
         let mut collected_dup: Vec<std::path::PathBuf> = images
             .par_iter()
             .enumerate()
-            .flat_map(|(i, target)| {
-                images[i + 1..].par_iter().filter_map(move |comp| {
+            .flat_map_iter(|(i, target)| {
+                images[i + 1..].iter().filter_map(move |comp| {
                     let h_d = target.image_d_hash.hamming_distance(&comp.image_d_hash);
                     let similarity = 1.0 - (h_d as f64 / 64.0);
                     if similarity >= 0.90 {
@@ -338,6 +378,7 @@ pub mod p_hashing {
                 })
             })
             .collect();
+        collected_dup.sort_unstable();
         collected_dup.dedup();
         collected_dup
     }
@@ -457,11 +498,48 @@ pub mod p_hashing {
     }
 
     pub fn return_d_hash(image: image::DynamicImage) -> fast_dhash::Dhash {
-        let i_w = image.width();
-        let i_h = image.height();
         let rgb_image = image.to_rgb8();
-        fast_dhash::Dhash::new(&rgb_image.into_raw(), i_w, i_h, 3)
+        let width = rgb_image.width() as usize;
+        let height = rgb_image.height() as usize;
+        let cell_width = width / 9;
+        let cell_height = height / 8;
+        let pixels = rgb_image.as_raw();
+        let mut grid = [[0.0_f64; 9]; 8];
+
+        for (y, row) in grid.iter_mut().enumerate() {
+            for (x, cell) in row.iter_mut().enumerate() {
+                let mut red = 0.0_f64;
+                let mut green = 0.0_f64;
+                let mut blue = 0.0_f64;
+
+                for image_x in x * cell_width..(x + 1) * cell_width {
+                    for image_y in y * cell_height..(y + 1) * cell_height {
+                        let pixel = (image_y * width + image_x) * 3;
+                        red += pixels[pixel] as f64;
+                        green += pixels[pixel + 1] as f64;
+                        blue += pixels[pixel + 2] as f64;
+                    }
+                }
+
+                *cell = red * 0.299 + green * 0.587 + blue * 0.114;
+            }
+        }
+
+        let mut hash = 0_u64;
+        for y in 0..8 {
+            for x in 0..8 {
+                if grid[y][x] > grid[y][x + 1] {
+                    hash |= 1 << (y * 8 + x);
+                }
+            }
+        }
+
+        fast_dhash::Dhash { hash }
     }
+
+    // #[cfg(test)]
+    // #[path = "../../test.rs"]
+    // mod tests;
 }
 
 pub mod s_hashing {
@@ -523,9 +601,7 @@ pub mod s_hashing {
     }
 }
 pub mod misc {
-    use std::str::FromStr;
-
-use crate::utils;
+   use crate::utils;
 
    pub fn create_temp_dir(extract_from_this_path: std::path::PathBuf) {
         if let Some(new_dir) = extract_from_this_path.parent() {
