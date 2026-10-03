@@ -687,6 +687,7 @@ pub mod misc {
         >,
         method: &str,
     ) {
+        use crate::utils;
         match std::fs::metadata(&mut *walk_thru) {
             Ok(file_descriptor_info) => {
                 if file_descriptor_info.is_dir() {
@@ -711,7 +712,7 @@ pub mod misc {
                     match std::fs::File::open(&walk_thru) {
                         Ok(_) => {
                             if method.eq("p") {
-                                utils::p_hashing::add_p_hash_for_media(&walk_thru);
+                               utils::p_hashing::add_p_hash_for_media(&walk_thru);
                             } else if method.eq("b") {
                                 utils::s_hashing::add_hash_from_path(&walk_thru, add_here);
                             } else {

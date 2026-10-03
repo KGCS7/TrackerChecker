@@ -1,6 +1,6 @@
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use crate::utils::{misc, p_hashing};
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 mod utils;
+use crate::utils::{misc, p_hashing};
 
 fn main() {
     let m =clap::Command::new("TorrentChecker").version("1.0")
