@@ -14,7 +14,10 @@ pub mod p_hashing {
             return None;
         }
 
-        let extension = p_hash_this.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+        let extension = p_hash_this
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
 
         match extension {
             "png" | "jpg" | "jpeg" => {
@@ -48,7 +51,11 @@ pub mod p_hashing {
                 }
             }
             "mkv" | "mp4" => {
-                let c_path = match std::ffi::CString::new(p_hash_this.to_str().expect("Error converting path to string")) {
+                let c_path = match std::ffi::CString::new(
+                    p_hash_this
+                        .to_str()
+                        .expect("Error converting path to string"),
+                ) {
                     Ok(c) => c,
                     Err(_) => {
                         println!("Null byte found in path string");
@@ -57,7 +64,8 @@ pub mod p_hashing {
                 };
 
                 unsafe {
-                    let mut fmt_ctx_ptr: *mut ffmpeg_sys_next::AVFormatContext = std::ptr::null_mut();
+                    let mut fmt_ctx_ptr: *mut ffmpeg_sys_next::AVFormatContext =
+                        std::ptr::null_mut();
                     if ffmpeg_sys_next::avformat_open_input(
                         &mut fmt_ctx_ptr,
                         c_path.as_ptr(),
@@ -69,7 +77,9 @@ pub mod p_hashing {
                         return None;
                     }
 
-                    if ffmpeg_sys_next::avformat_find_stream_info(fmt_ctx_ptr, std::ptr::null_mut()) < 0 {
+                    if ffmpeg_sys_next::avformat_find_stream_info(fmt_ctx_ptr, std::ptr::null_mut())
+                        < 0
+                    {
                         println!("Error finding stream info");
                         ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
                         return None;
@@ -118,7 +128,9 @@ pub mod p_hashing {
                         return None;
                     }
 
-                    if ffmpeg_sys_next::avcodec_open2(decode_context, decoder, std::ptr::null_mut()) < 0 {
+                    if ffmpeg_sys_next::avcodec_open2(decode_context, decoder, std::ptr::null_mut())
+                        < 0
+                    {
                         println!("Failed to open decoder.");
                         ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
                         ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
@@ -147,8 +159,11 @@ pub mod p_hashing {
                         ffmpeg_sys_next::AVSEEK_FLAG_BACKWARD as i32,
                     );
                     if seek_result < 0 {
-                        println!("Unable to seek to a video keyframe; decoding from the beginning.");
-                        let start_time = if (*stream).start_time == ffmpeg_sys_next::AV_NOPTS_VALUE {
+                        println!(
+                            "Unable to seek to a video keyframe; decoding from the beginning."
+                        );
+                        let start_time = if (*stream).start_time == ffmpeg_sys_next::AV_NOPTS_VALUE
+                        {
                             0
                         } else {
                             (*stream).start_time
@@ -163,9 +178,7 @@ pub mod p_hashing {
                             println!(
                                 "Failed to seek to the beginning of the video: FFmpeg error {fallback_seek_result}."
                             );
-                            ffmpeg_sys_next::avcodec_free_context(
-                                &mut (decode_context as *mut _),
-                            );
+                            ffmpeg_sys_next::avcodec_free_context(&mut (decode_context as *mut _));
                             ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
                             return None;
                         }
@@ -200,7 +213,8 @@ pub mod p_hashing {
                                     let width = (*frame).width;
                                     let height = (*frame).height;
 
-                                    let mut dst_buf = vec![0u8; (width as usize) * (height as usize) * 3];
+                                    let mut dst_buf =
+                                        vec![0u8; (width as usize) * (height as usize) * 3];
                                     let mut dst_data: [*mut u8; 8] = [std::ptr::null_mut(); 8];
                                     let mut dst_linesize: [i32; 8] = [0; 8];
 
@@ -241,7 +255,9 @@ pub mod p_hashing {
                                         ffmpeg_sys_next::sws_freeContext(sws_ctx);
 
                                         if ret > 0 {
-                                            let temp_path = std::path::PathBuf::from(&misc::temp_path_for_p_hash(p_hash_this));
+                                            let temp_path = std::path::PathBuf::from(
+                                                &misc::temp_path_for_p_hash(p_hash_this),
+                                            );
                                             misc::create_temp_dir(temp_path.clone());
 
                                             if image::save_buffer_with_format(
@@ -251,7 +267,9 @@ pub mod p_hashing {
                                                 height as u32,
                                                 image::ColorType::Rgb8,
                                                 image::ImageFormat::Png,
-                                            ).is_ok() {
+                                            )
+                                            .is_ok()
+                                            {
                                                 result = Some(temp_path);
                                             }
                                         }
@@ -479,7 +497,9 @@ pub mod p_hashing {
                     }
                     #[cfg(target_os = "windows")]
                     {
-                        if let Err(e) = std::process::Command::new("cmd").args(["/C", "start", "", target_path.to_str().unwrap_or("")]).spawn()
+                        if let Err(e) = std::process::Command::new("cmd")
+                            .args(["/C", "start", "", target_path.to_str().unwrap_or("")])
+                            .spawn()
                         {
                             println!("Error opening file for preview: {e}");
                         }
@@ -537,9 +557,6 @@ pub mod p_hashing {
         fast_dhash::Dhash { hash }
     }
 
-    // #[cfg(test)]
-    // #[path = "../../test.rs"]
-    // mod tests;
 }
 
 pub mod s_hashing {
@@ -600,10 +617,9 @@ pub mod s_hashing {
         }
     }
 }
-pub mod misc {
-   use crate::utils;
 
-   pub fn create_temp_dir(extract_from_this_path: std::path::PathBuf) {
+pub mod misc {
+    pub fn create_temp_dir(extract_from_this_path: std::path::PathBuf) {
         if let Some(new_dir) = extract_from_this_path.parent() {
             if !new_dir.is_dir() {
                 std::fs::create_dir_all(new_dir).expect("msg");
@@ -643,7 +659,7 @@ pub mod misc {
 
         format!("./tempDir/{} copy.png", path_str)
     }
-    
+
     pub fn flush_the_cache(mode: bool) {
         let t_b: &std::path::Path = std::path::Path::new("./tempDir/");
         if mode.eq(&true) {
@@ -712,7 +728,7 @@ pub mod misc {
                     match std::fs::File::open(&walk_thru) {
                         Ok(_) => {
                             if method.eq("p") {
-                               utils::p_hashing::add_p_hash_for_media(&walk_thru);
+                                utils::p_hashing::add_p_hash_for_media(&walk_thru);
                             } else if method.eq("b") {
                                 utils::s_hashing::add_hash_from_path(&walk_thru, add_here);
                             } else {
