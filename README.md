@@ -29,6 +29,16 @@ Plase refer to the [Dependencies](#dependencies) section for help configuring th
     </li>
     <br><br>
     </ul>
+
+    To get the full list of arguments, one can pass one of the stand alone argument; as they are all equivalent and all bring up the same help menu.
+    <ul>
+    <li> <code> -h </code> </li>
+    <li> <code> -help </code> </li>
+    <li> <code> --h </code> </li>
+    <li> <code> --help </code> </li>
+    </ul>
+    
+    That is to say that `cargo run -- -help` will bring the same menu as `./target/debug/tCheck.exe -h`
     
 # Dependencies
 
@@ -45,6 +55,16 @@ Thankfully Mac and Unix Like OS make it easier to install and link FFMpeg.
 For Mac, using [homebrew package manager](https://brew.sh/) would be the simplest to download and use the FFMpeg function calls.
 
 `brew install FFMpeg`
+
+One might need to install the shared libraries used such as 
+<ul>
+<li> libavutil-dev </li>
+<li> libswscale-dev </li>
+<li> libavcodec-dev </li>
+<li> libavdevice-dev </li>
+<li> libavfilter-dev </li>
+
+</ul>
 ### Windows
 FFMpeg Shared files are need for the program as we call functions themselves instead of the program. Shared files are not readily available for some architectures via package managers like Winget. Downloading and attempting to use FFMpeg bindings made for other architectures might get an error message like this: 
 ![](https://raw.githubusercontent.com/KGCS7/TrackerChecker/RSS/errorPics/archMismatchMessage.png)  [However, FFMpeg provides the libraries themselves for different architecture.](https://github.com/BtbN/FFMpeg-Builds/releases) Just download the zipped file ending in `*-shared-gpl.{extension}`. After downloading and extracting the files, we must link set the packages up to be able to be used for linking and building our program later. On Windows complete the following steps:
@@ -58,10 +78,21 @@ FFMpeg Shared files are need for the program as we call functions themselves ins
 
 Some systems might receive an error message like this ![](https://raw.githubusercontent.com/KGCS7/TrackerChecker/RSS/errorPics/hwcudaError.png) FRET NOT! This is due to a linking error for GPU acceleration capabilities that are not implemented for the program (YET). The fix is to simply delete the offending file {path of FFMpeg Library}/include/libavutil/hwcontext_cuda.h. Then restart terminal and rebuild.
 
+## Linux (Debian 13 tested)
+
+One is able to download the files from FFMpeg needed by using <code> sudo aot install ffmpeg</code>
+
 # Linking and Building 
+To build a Rust program will require clang or another gcc compiler to build the project. If not already configured you might receive an error message like:
+
 ## Windows
-To build a Rust program will require clang or another gcc compiler to build the project. If not already configured you might receive an error message like ![](https://raw.githubusercontent.com/KGCS7/TrackerChecker/RSS/errorPics/noVisualStudioLinker.png)
+![](https://raw.githubusercontent.com/KGCS7/TrackerChecker/RSS/errorPics/noVisualStudioLinker.png)
 To properly build, [there's no other way other than downloading Microsoft Visual Studio](https://visualstudio.microsoft.com/downloads/) and enabling Desktop C++ Application development features. ![](https://raw.githubusercontent.com/KGCS7/TrackerChecker/RSS/errorPics/desktopDevVS.png)
+
+## Linux (Tested on Debian 13)
+
+![](./errorPics/debMissingCLinker.png)
+To allievate this message, one simply runs <code>sudo apt install clang</code>
 
 # LLVM
 ## Windows
