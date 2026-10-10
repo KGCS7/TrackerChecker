@@ -2,6 +2,40 @@ pub mod p_hashing {
     use crate::utils::{self, misc};
     use rayon::prelude::*;
 
+    pub(crate) fn has_valid_avcc_nal_units(packet: &[u8], nal_length_size: usize) -> bool {
+        if packet.is_empty() || !(1..=4).contains(&nal_length_size) {
+            return false;
+        }
+
+        let mut offset = 0;
+        while offset < packet.len() {
+            let Some(length_field_end) = offset.checked_add(nal_length_size) else {
+                return false;
+            };
+            let Some(length_bytes) = packet.get(offset..length_field_end) else {
+                return false;
+            };
+
+            let nal_length = length_bytes
+                .iter()
+                .fold(0usize, |length, byte| (length << 8) | usize::from(*byte));
+            if nal_length == 0 {
+                return false;
+            }
+
+            let Some(nal_end) = length_field_end.checked_add(nal_length) else {
+                return false;
+            };
+            if nal_end > packet.len() {
+                return false;
+            }
+
+            offset = nal_end;
+        }
+
+        true
+    }
+
     pub struct PHashData {
         pub original_path: std::path::PathBuf,
         pub temp_path: std::path::PathBuf,
@@ -102,6 +136,17 @@ pub mod p_hashing {
 
                     let stream = *(*fmt_ctx_ptr).streams.add(stream_index as usize);
                     let codec_id = (*(*stream).codecpar).codec_id;
+                    let codec_parameters = (*stream).codecpar;
+                    let avcc_nal_length_size = if codec_id
+                        == ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264
+                        && !(*codec_parameters).extradata.is_null()
+                        && (*codec_parameters).extradata_size >= 5
+                        && *(*codec_parameters).extradata == 1
+                    {
+                        Some(((*(*codec_parameters).extradata.add(4) & 0x03) + 1) as usize)
+                    } else {
+                        None
+                    };
                     let decoder = ffmpeg_sys_next::avcodec_find_decoder(codec_id);
 
                     if decoder.is_null() {
@@ -204,79 +249,99 @@ pub mod p_hashing {
 
                     while ffmpeg_sys_next::av_read_frame(fmt_ctx_ptr, packet) >= 0 {
                         if (*packet).stream_index == stream_index {
+                            if let Some(nal_length_size) = avcc_nal_length_size {
+                                if (*packet).size <= 0 || (*packet).data.is_null() {
+                                    // println!("Skipping empty H.264 packet in {p_hash_this:?}.");
+                                    ffmpeg_sys_next::av_packet_unref(packet);
+                                    continue;
+                                }
+
+                                let packet_data = std::slice::from_raw_parts(
+                                    (*packet).data,
+                                    (*packet).size as usize,
+                                );
+                                if !has_valid_avcc_nal_units(packet_data, nal_length_size) {
+                                    // println!("Skipping malformed H.264 packet in {p_hash_this:?}.");
+                                    ffmpeg_sys_next::av_packet_unref(packet);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        if (*packet).stream_index == stream_index {
                             let send_result =
                                 ffmpeg_sys_next::avcodec_send_packet(decode_context, packet);
                             if send_result >= 0 {
                                 while ffmpeg_sys_next::avcodec_receive_frame(decode_context, frame)
                                     == 0
                                 {
-                                    let width = (*frame).width;
-                                    let height = (*frame).height;
+                                    if result.is_none() {
+                                        let width = (*frame).width;
+                                        let height = (*frame).height;
 
-                                    let mut dst_buf =
-                                        vec![0u8; (width as usize) * (height as usize) * 3];
-                                    let mut dst_data: [*mut u8; 8] = [std::ptr::null_mut(); 8];
-                                    let mut dst_linesize: [i32; 8] = [0; 8];
+                                        let mut dst_buf =
+                                            vec![0u8; (width as usize) * (height as usize) * 3];
+                                        let mut dst_data: [*mut u8; 8] = [std::ptr::null_mut(); 8];
+                                        let mut dst_linesize: [i32; 8] = [0; 8];
 
-                                    dst_data[0] = dst_buf.as_mut_ptr();
-                                    dst_linesize[0] = 3 * width;
+                                        dst_data[0] = dst_buf.as_mut_ptr();
+                                        dst_linesize[0] = 3 * width;
 
-                                    let frame_format: ffmpeg_sys_next::AVPixelFormat;
-                                    match frame.as_ref().expect("msg").format {
-                                        num => {
-                                            frame_format = std::mem::transmute(num);
+                                        let frame_format: ffmpeg_sys_next::AVPixelFormat;
+                                        match frame.as_ref().expect("msg").format {
+                                            num => {
+                                                frame_format = std::mem::transmute(num);
+                                            }
                                         }
-                                    }
 
-                                    let sws_ctx = ffmpeg_sys_next::sws_getContext(
-                                        width,
-                                        height,
-                                        frame_format,
-                                        width,
-                                        height,
-                                        ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
-                                        ffmpeg_sys_next::SwsFlags::SWS_BILINEAR as i32,
-                                        std::ptr::null_mut(),
-                                        std::ptr::null_mut(),
-                                        std::ptr::null_mut(),
-                                    );
-
-                                    if !sws_ctx.is_null() {
-                                        let ret = ffmpeg_sys_next::sws_scale(
-                                            sws_ctx,
-                                            (*frame).data.as_ptr() as *const *const u8,
-                                            (*frame).linesize.as_ptr(),
-                                            0,
+                                        let sws_ctx = ffmpeg_sys_next::sws_getContext(
+                                            width,
                                             height,
-                                            dst_data.as_mut_ptr(),
-                                            dst_linesize.as_ptr(),
+                                            frame_format,
+                                            width,
+                                            height,
+                                            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
+                                            ffmpeg_sys_next::SwsFlags::SWS_BILINEAR as i32,
+                                            std::ptr::null_mut(),
+                                            std::ptr::null_mut(),
+                                            std::ptr::null_mut(),
                                         );
 
-                                        ffmpeg_sys_next::sws_freeContext(sws_ctx);
-
-                                        if ret > 0 {
-                                            let temp_path = std::path::PathBuf::from(
-                                                &misc::temp_path_for_p_hash(p_hash_this),
+                                        if !sws_ctx.is_null() {
+                                            let ret = ffmpeg_sys_next::sws_scale(
+                                                sws_ctx,
+                                                (*frame).data.as_ptr() as *const *const u8,
+                                                (*frame).linesize.as_ptr(),
+                                                0,
+                                                height,
+                                                dst_data.as_mut_ptr(),
+                                                dst_linesize.as_ptr(),
                                             );
-                                            misc::create_temp_dir(temp_path.clone());
 
-                                            if image::save_buffer_with_format(
-                                                &temp_path,
-                                                &dst_buf,
-                                                width as u32,
-                                                height as u32,
-                                                image::ColorType::Rgb8,
-                                                image::ImageFormat::Png,
-                                            )
-                                            .is_ok()
-                                            {
-                                                result = Some(temp_path);
+                                            ffmpeg_sys_next::sws_freeContext(sws_ctx);
+
+                                            if ret > 0 {
+                                                let temp_path = std::path::PathBuf::from(
+                                                    &misc::temp_path_for_p_hash(p_hash_this),
+                                                );
+                                                misc::create_temp_dir(temp_path.clone());
+
+                                                if image::save_buffer_with_format(
+                                                    &temp_path,
+                                                    &dst_buf,
+                                                    width as u32,
+                                                    height as u32,
+                                                    image::ColorType::Rgb8,
+                                                    image::ImageFormat::Png,
+                                                )
+                                                .is_ok()
+                                                {
+                                                    result = Some(temp_path);
+                                                }
                                             }
                                         }
                                     }
-                                    ffmpeg_sys_next::av_packet_unref(packet);
                                     ffmpeg_sys_next::av_frame_unref(frame);
-                                    break;
                                 }
                             }
                         }
@@ -556,7 +621,6 @@ pub mod p_hashing {
 
         fast_dhash::Dhash { hash }
     }
-
 }
 
 pub mod s_hashing {
