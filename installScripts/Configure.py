@@ -1,6 +1,19 @@
 import os, sys, subprocess
-class FFmpegChecks:
+class FFmpegChecks:                
     ffmpeg_link:set[str] = set(["libavutil.a", "libswscale.a","libavcodec.a", "libavdevice.a","libavfilter.a"])
+    match sys.platform:
+        case 'win32':
+            ffmpeg_link:set[str] = set(["libavutil.dll.a", "libswscale.dll.a","libavcodec.dll.a", "libavdevice.dll.a","libavfilter.dll.a"])
+            check_here: str | None = os.environ.get("FFMPEG_DIR") 
+            if check_here is None:
+                check_here:set = {os.environ.get("PATH").split(';')}
+                if len(check_here) == 0: print(f"THERE'S A PROBLEM WITH FINDING THE POSSIBLE PATHS TO LOOK FOR FFMPEG")
+        case 'linux':
+            check_here = "/usr/lib/"
+        case 'darwin':
+            check_here = "/opt/homebrew/lib"
+
+    
     def download_missing_headers(lib_List:set):
         match sys.platform:
             case 'linux':
@@ -15,11 +28,15 @@ class FFmpegChecks:
                         print(f"Error installing FFmpeg via Homebrew")
         return
 
-
 class RustCheck:
-    hardware_accelleration = set(["hwcontext_cuda.h"])
-    if sys.platform == 'win32': rust_link = set(["cargo.exe"]); check_here = os.path.expanduser("~\\.cargo\\")
-    else: rust_link = set(["cargo"]); check_here = os.path.expanduser("~/.cargo/")
+    rust_link = set(["cargo"]); 
+    check_here = os.path.expanduser("~\\.cargo\\")
+    hardware_acceleration = set(["hwcontext_cuda.h"])
+    
+    match sys.platform:
+        case 'win32': rust_link = set(["cargo.exe"]); 
+        case 'linux':  check_here = "/usr/bin/"
+
     def download_rust():
         match sys.platform:
             case 'darwin':
@@ -28,28 +45,21 @@ class RustCheck:
                 return
             case 'win32':
                 subprocess.run("winget install --Id Rustlang.Rustup --source winget", shell=True)
-                # print("winget install --Id Rustlang.Rustup --source winget")
         return
 
-    def check_for_cuda_compatibiility() -> bool:
+    def check_for_cuda_compatibility() -> bool:
         try:
-            ffmpeg_dir = os.environ.get("FFMPEG_DIR") 
-            searchFile = search_for_file_in_dir(file_name=ffmpeg_dir, look_for=RustCheck.hardware_accelleration, optional_compare=True)
-            match type(searchFile):
-                case set:
-                    for i in searchFile:
-                        match subprocess.run(f"del {i}",shell = True).check_returncode:
-                            case 0:
-                                # print(f"subprocess.run(\"del {i}\",\"shell\" = True)")
-                                return True
-                            case _:
-                                print(f"Couldn't delete {RustCheck.hardware_accelleration} try manually deleteing at {i}")
-                                return False
-        except:
-            # print(f"{os.environ}")
+            if sys.platform == 'win32' and not None: 
+                ffmpeg_dir = os.environ.get("FFMPEG_DIR") 
+                if Misc.search_for_file_in_dir(file_name=ffmpeg_dir, look_for=RustCheck.hardware_acceleration, optional_delete=True) == True:
+                    return True
+                elif set:
+                    print(f"I couldn't find hwcontext_cuda.h in {ffmpeg_dir}")
+                    return False
+            else: return True
+        except: 
             return False       
-        return
-
+        
 class ClangCheck:
     def download_libclang():
         match sys.platform:
@@ -59,72 +69,80 @@ class ClangCheck:
                 subprocess.run("winget install -Id Microsoft.VisualStudio.Community --source winget")
                 return
 
-def check_headers(dependency):
-    set_to_check = set()
-    match dependency:
-        case 'FFmpegChecks':
-            set_to_check = FFmpegChecks.ffmpeg_link
-            match sys.platform:
-                    case 'linux':
-                        attempt_for_PATH = "/usr/lib/"
-                    case 'darwin':
-                        attempt_for_PATH = "/opt/homebrew/lib"
-                    case 'win32':
-                        attempt_for_PATH: str|list[str]|None = os.environ.get("PATH").split(':')
-            
-        case 'RustCheck':
-            set_to_check = RustCheck.rust_link
-            attempt_for_PATH = RustCheck.check_here
-            
-    # Matching based on OS
-    if isinstance(attempt_for_PATH, str): missing_headers = search_for_file_in_dir(attempt_for_PATH, set_to_check)
-    else:
-        for fd in attempt_for_PATH:
-            missing_headers = search_for_file_in_dir(fd, set_to_check)
-
-    if type(missing_headers) == set: 
+class Misc:
+    def delete_via_set(parse_from:set) -> bool|set:
+        for f in parse_from:
+            if os.path.exists(f):                    
+                match subprocess.run(f"del {f}",shell = True).check_returncode:
+                    case 0:
+                        print(f"subprocess.run(\"del {os.path.join(_, f)}\",\"shell\" = True)")
+                        return True
+                    case _:
+                        print(f"Couldn't delete {f} try manually deleteing at {f}")
+                        return False
+        return
+    
+    def check_headers(dependency):
+        set_to_check = set()
         match dependency:
             case 'FFmpegChecks':
-                FFmpegChecks.download_missing_headers(missing_headers)
+                set_to_check = FFmpegChecks.ffmpeg_link
+                attempt_for_PATH = FFmpegChecks.check_here
             case 'RustCheck':
-                RustCheck.download_rust()
-    elif missing_headers == False: print(f"Error downloading the needed files: {missing_headers}")
-    return
+                set_to_check = RustCheck.rust_link
+                attempt_for_PATH = RustCheck.check_here
+                
+        # Matching based on OS
+        if isinstance(attempt_for_PATH, str): missing_headers = Misc.search_for_file_in_dir(attempt_for_PATH, set_to_check)
+        else:
+            for fd in attempt_for_PATH:
+                missing_headers = Misc.search_for_file_in_dir(fd, set_to_check)
+                if missing_headers == True: return
 
-def search_for_file_in_dir(file_name, look_for:set, optional_compare=False) -> bool | list | set:
-    list_of_found_files = []
-    list_of_missing_files = []
-    match os.path.isdir(file_name):
-        case True:
-            for _, list_of_dir, list_of_files in os.walk(file_name): 
-                set_of_files = set(list_of_files)
-                list_of_found_files = set_of_files & look_for
-                list_of_missing_files =  look_for - set_of_files
+        if type(missing_headers) == set: 
+            match dependency:
+                case 'FFmpegChecks':
+                    FFmpegChecks.download_missing_headers(missing_headers)
+                case 'RustCheck':
+                    RustCheck.download_rust()
 
-                if (len(list_of_missing_files) == 0) and (list_of_found_files == look_for): # Early Exit
-                    print(f"Files: {list_of_found_files} seem to present"); 
-                    if optional_compare:
-                        return {os.path.join(_, f) for f in list_of_found_files}
-                    else:
+        elif missing_headers == False: print(f"Error downloading the needed files: {missing_headers}")
+        return
+
+    def search_for_file_in_dir(file_name, look_for:set, optional_delete=False) -> bool | set:
+        match os.path.isdir(file_name):
+            case True:
+                for _, list_of_dir, list_of_files in os.walk(file_name): 
+                    set_of_files = set(list_of_files)
+                    list_of_found_files = set_of_files & look_for
+                    list_of_missing_files =  look_for - set_of_files
+
+                    if (len(list_of_missing_files) == 0) and (list_of_found_files == look_for): # Early Exit
+                        print(f"Files: {list_of_found_files} seem to present"); return True
+                    else:     
+                        for subDir in list_of_dir:
+                            if Misc.search_for_file_in_dir(f"{_}\\{subDir}", look_for, optional_delete=optional_delete) == True: 
+                                return True
+                            
+                    if len(list_of_found_files) > 0 and optional_delete: 
+                        Misc.delete_via_set({os.join(f"{_}\\{i}") for i in list_of_found_files})
+                    elif len(list_of_found_files) > 0 and not optional_delete:
                         return True
-                else:     
-                    for subDir in list_of_dir:
-                        search_for_file_in_dir(subDir, look_for, optional_compare=optional_compare)
-        case False:
-            match optional_compare:
-                case True:
-                    if file_name in look_for:
-                        return os.path.abspath(file_name)
-                    else:
-                        return False
-                case False:
-                    return         
-    
-    if (len(list_of_missing_files) == 0) and (list_of_found_files == look_for):
-        print("All files seem to present"); return True
-    else:     
-        return list_of_missing_files
+            case False: 
+                match optional_delete:
+                    case True:
+                        if file_name in look_for:
+                            return os.path.abspath(file_name)
+                        else:
+                            return False
+                    case False:
+                        return          
+        
+        if (len(list_of_missing_files) == 0) and (list_of_found_files == look_for):
+            print("All files seem to present"); return True
+        else:     
+            return list_of_missing_files
 
-check_headers(FFmpegChecks.__name__)
-check_headers(RustCheck.__name__)
-RustCheck.check_for_cuda_compatibiility()
+Misc.check_headers(FFmpegChecks.__name__)
+Misc.check_headers(RustCheck.__name__)
+RustCheck.check_for_cuda_compatibility()
