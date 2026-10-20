@@ -1,4 +1,4 @@
-import os, sys, subprocess
+import os, sys, subprocess, pathlib
 class FFmpegChecks:                
     ffmpeg_link:set[str] = set(["libavutil.a", "libswscale.a","libavcodec.a", "libavdevice.a","libavfilter.a"])
     match sys.platform:
@@ -6,14 +6,13 @@ class FFmpegChecks:
             ffmpeg_link:set[str] = set(["libavutil.dll.a", "libswscale.dll.a","libavcodec.dll.a", "libavdevice.dll.a","libavfilter.dll.a"])
             check_here: str | None = os.environ.get("FFMPEG_DIR") 
             if check_here is None:
-                check_here:set = {os.environ.get("PATH").split(';')}
+                check_here:set = {i for i in os.environ.get("PATH").split(';')}
                 if len(check_here) == 0: print(f"THERE'S A PROBLEM WITH FINDING THE POSSIBLE PATHS TO LOOK FOR FFMPEG")
         case 'linux':
             check_here = "/usr/lib/"
         case 'darwin':
             check_here = "/opt/homebrew/lib"
 
-    
     def download_missing_headers(lib_List:set):
         match sys.platform:
             case 'linux':
@@ -26,7 +25,22 @@ class FFmpegChecks:
                         subprocess.run("brew install ffmpeg", shell=True)
                     except:
                         print(f"Error installing FFmpeg via Homebrew")
-        return
+            case 'win32':
+                try:
+                    try_where_exe = subprocess.run(f"where.exe /R C:\\ \"libavutil.dll.a\"", capture_output=True, shell=True)
+                    match try_where_exe.returncode:
+                        case 0:
+                            temp_path = {possible_paths  for possible_paths in try_where_exe.stdout.splitlines()}
+                            for p in temp_path:
+                                list_of_p = pathlib.Path(str(p))
+                                os.environ["FFMPEG_DIR"] = str(list_of_p.parent.parent)
+                                if os.environ.get("FFMPEG_DIR") is None:
+                                    raise Exception
+                                else:
+                                    print("SUCCESSFULLY SET ENVIORMENT VARIABLE")
+                    return  
+                except Exception as e:
+                    print(f"Error {e}")
 
 class RustCheck:
     rust_link = set(["cargo"]); 
@@ -51,13 +65,12 @@ class RustCheck:
         try:
             if sys.platform == 'win32' and not None: 
                 ffmpeg_dir = os.environ.get("FFMPEG_DIR") 
-                if Misc.search_for_file_in_dir(file_name=ffmpeg_dir, look_for=RustCheck.hardware_acceleration, optional_delete=True) == True:
-                    return True
-                elif set:
-                    print(f"I couldn't find hwcontext_cuda.h in {ffmpeg_dir}")
-                    return False
+                attempt_for_delete = Misc.search_for_file_in_dir(file_name=ffmpeg_dir, look_for=RustCheck.hardware_acceleration, optional_delete=True) 
+                if attempt_for_delete == True: return True
+                elif set: return False
             else: return True
-        except: 
+        except Exception as e:
+            print(f"Error: {e}") 
             return False       
         
 class ClangCheck:
@@ -70,17 +83,27 @@ class ClangCheck:
                 return
 
 class Misc:
-    def delete_via_set(parse_from:set) -> bool|set:
-        for f in parse_from:
+    def delete_via_set(delete_set:set, target_dir:None|set = None) -> bool|set:
+        failed_delete = set()
+        for f in delete_set:
             if os.path.exists(f):                    
                 match subprocess.run(f"del {f}",shell = True).check_returncode:
                     case 0:
                         print(f"subprocess.run(\"del {os.path.join(_, f)}\",\"shell\" = True)")
-                        return True
                     case _:
-                        print(f"Couldn't delete {f} try manually deleteing at {f}")
-                        return False
-        return
+                        failed_delete.add(f)
+        if len(failed_delete) != 0:
+            for i in failed_delete: 
+                try:
+                    attempt_path = pathlib.Path(i)
+                    if attempt_path.is_file():
+                        subprocess.run(f"where.exe /R {attempt_path.name}")               
+                except Exception as e:
+                    print(f"{e}")
+            
+            print("Couldn't find the following files")
+            return failed_delete       
+        else: return True
     
     def check_headers(dependency):
         set_to_check = set()
@@ -118,31 +141,37 @@ class Misc:
                     list_of_missing_files =  look_for - set_of_files
 
                     if (len(list_of_missing_files) == 0) and (list_of_found_files == look_for): # Early Exit
-                        print(f"Files: {list_of_found_files} seem to present"); return True
+                        print(f"Files: {list_of_found_files} seem to present"); 
+                        # While we are here we shall delete the files if the optional_delete is TRUE
+                        if optional_delete:
+                            Misc.delete_via_set({(f"{_}\\{i}") for i in list_of_found_files})
+                        return True
                     else:     
                         for subDir in list_of_dir:
                             if Misc.search_for_file_in_dir(f"{_}\\{subDir}", look_for, optional_delete=optional_delete) == True: 
                                 return True
-                            
-                    if len(list_of_found_files) > 0 and optional_delete: 
-                        Misc.delete_via_set({os.join(f"{_}\\{i}") for i in list_of_found_files})
-                    elif len(list_of_found_files) > 0 and not optional_delete:
-                        return True
+                    
+                    match len(list_of_found_files) > 0:
+                        case True:
+                            if len(list_of_found_files) > 0 and optional_delete: 
+                                Misc.delete_via_set({os.join(f"{_}\\{i}") for i in list_of_found_files})
+                            elif len(list_of_found_files) > 0 and not optional_delete:
+                                return True
+                        case 0:
+                            return list_of_missing_files
             case False: 
-                match optional_delete:
-                    case True:
-                        if file_name in look_for:
-                            return os.path.abspath(file_name)
-                        else:
-                            return False
-                    case False:
-                        return          
-        
-        if (len(list_of_missing_files) == 0) and (list_of_found_files == look_for):
-            print("All files seem to present"); return True
-        else:     
-            return list_of_missing_files
+                if file_name in look_for:
+                    match optional_delete:
+                        case True:
+                            Misc.delete_via_set(set(file_name))
+                            os.path.abspath(file_name)
+                        case False:
+                            return True         
+                else:
+                    return False
 
-Misc.check_headers(FFmpegChecks.__name__)
-Misc.check_headers(RustCheck.__name__)
-RustCheck.check_for_cuda_compatibility()
+
+if __name__ == "__main__":
+    Misc.check_headers(FFmpegChecks.__name__)
+    Misc.check_headers(RustCheck.__name__)
+    RustCheck.check_for_cuda_compatibility()
