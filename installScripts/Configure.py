@@ -1,4 +1,5 @@
-import os, sys, subprocess, pathlib
+import os, sys, subprocess, pathlib, ctypes, winreg
+
 class FFmpegChecks:                
     ffmpeg_link:set[str] = set(["libavutil.a", "libswscale.a","libavcodec.a", "libavdevice.a","libavfilter.a"])
     match sys.platform:
@@ -12,6 +13,38 @@ class FFmpegChecks:
             check_here = "/usr/lib/"
         case 'darwin':
             check_here = "/opt/homebrew/lib"
+
+    """ 
+        FOR USE FOR WINDOWS MACHINES 
+        Looks for FFMpeg libraries and creates a system-wide environment variable with the parent root as the value.
+        If there is a problem setting the environment variable, an error will be thrown. 
+    """  
+    def create_FFmpeg_Dir_Path():
+        try_where_exe = subprocess.run(["where.exe", "/R", "C:\\", "libavutil.dll.a"], capture_output=True, text=True, check=True)
+        matches = try_where_exe.stdout.splitlines()
+        if not matches:
+            raise FileNotFoundError("where.exe found no libavutil.dll.a files")
+
+        ffmpeg_dir = str(pathlib.Path(matches[0]).parent.parent)
+        environment_key_path = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, environment_key_path, 0, winreg.KEY_SET_VALUE) as environment_key:
+                winreg.SetValueEx(environment_key, "FFMPEG_DIR", 0, winreg.REG_SZ, ffmpeg_dir)
+        except PermissionError as error:
+            raise PermissionError("Setting machine-wide FFMPEG_DIR requires running the setup as Administrator") from error
+
+        result = ctypes.c_size_t()
+        send_message_timeout = ctypes.WinDLL("user32", use_last_error=True).SendMessageTimeoutW
+        send_message_timeout.argtypes = [ 
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_wchar_p, 
+            ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_size_t)]
+        send_message_timeout.restype = ctypes.c_ssize_t
+        if not send_message_timeout(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, ctypes.byref(result)):
+            print("Warning: Windows did not notify running applications about the environment change.")
+
+        print(f"Successfully created FFMPEG_DIR that points to {ffmpeg_dir}")
+        print("Restart any already-open terminals or IDEs before building.")
+        return
 
     def download_missing_headers(lib_List:set):
         match sys.platform:
@@ -27,20 +60,11 @@ class FFmpegChecks:
                         print(f"Error installing FFmpeg via Homebrew")
             case 'win32':
                 try:
-                    try_where_exe = subprocess.run(f"where.exe /R C:\\ \"libavutil.dll.a\"", capture_output=True, shell=True)
-                    match try_where_exe.returncode:
-                        case 0:
-                            temp_path = {possible_paths  for possible_paths in try_where_exe.stdout.splitlines()}
-                            for p in temp_path:
-                                list_of_p = pathlib.Path(str(p))
-                                os.environ["FFMPEG_DIR"] = str(list_of_p.parent.parent)
-                                if os.environ.get("FFMPEG_DIR") is None:
-                                    raise Exception
-                                else:
-                                    print("SUCCESSFULLY SET ENVIORMENT VARIABLE")
+                    FFmpegChecks.create_FFmpeg_Dir_Path()
                     return  
                 except Exception as e:
                     print(f"Error {e}")
+                    raise
 
 class RustCheck:
     rust_link = set(["cargo"]); 
@@ -173,5 +197,5 @@ class Misc:
 
 if __name__ == "__main__":
     Misc.check_headers(FFmpegChecks.__name__)
-    Misc.check_headers(RustCheck.__name__)
-    RustCheck.check_for_cuda_compatibility()
+    # Misc.check_headers(RustCheck.__name__)
+    # RustCheck.check_for_cuda_compatibility()
