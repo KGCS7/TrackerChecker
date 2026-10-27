@@ -75,12 +75,11 @@ class RustCheck:
     
     match sys.platform:
         case 'win32': rust_link = set(["cargo.exe"]); 
-        case 'linux':  check_here = "/usr/bin/"
+        case 'linux':  check_here = set(["/usr/bin/", "/home/"])
 
     def download_rust():
         match sys.platform:
             case 'darwin':
-                print("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
                 subprocess.run("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",shell=True)
             case 'linux':
                 subprocess.run("sudo apt install rustup", shell=True)
