@@ -48,6 +48,8 @@ pub mod p_hashing {
             return None;
         }
 
+        const BINLINEAR_SEARCH:i32 = 2;
+
         let extension = p_hash_this
             .extension()
             .and_then(|ext| ext.to_str())
@@ -301,7 +303,7 @@ pub mod p_hashing {
                                             width,
                                             height,
                                             ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
-                                            ffmpeg_sys_next::SwsFlags::SWS_BILINEAR as i32,
+                                            BINLINEAR_SEARCH,
                                             std::ptr::null_mut(),
                                             std::ptr::null_mut(),
                                             std::ptr::null_mut(),

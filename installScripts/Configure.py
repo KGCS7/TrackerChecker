@@ -1,4 +1,6 @@
-import os, sys, subprocess, pathlib, ctypes, winreg
+import os, sys, subprocess, pathlib, ctypes
+if sys.platform == 'win32':
+    import winreg
 
 class FFmpegChecks:                
     ffmpeg_link:set[str] = set(["libavutil.a", "libswscale.a","libavcodec.a", "libavdevice.a","libavfilter.a"])
@@ -79,8 +81,9 @@ class RustCheck:
         match sys.platform:
             case 'darwin':
                 print("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
+                subprocess.run("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",shell=True)
             case 'linux':
-                return
+                subprocess.run("sudo apt install rustup", shell=True)
             case 'win32':
                 subprocess.run("winget install --Id Rustlang.Rustup --source winget", shell=True)
         return
@@ -138,13 +141,12 @@ class Misc:
             case 'RustCheck':
                 set_to_check = RustCheck.rust_link
                 attempt_for_PATH = RustCheck.check_here
-                
-        # Matching based on OS
+
         if isinstance(attempt_for_PATH, str): missing_headers = Misc.search_for_file_in_dir(attempt_for_PATH, set_to_check)
         else:
             for fd in attempt_for_PATH:
                 missing_headers = Misc.search_for_file_in_dir(fd, set_to_check)
-                if missing_headers == True: return
+                if missing_headers == True: return  
 
         if type(missing_headers) == set: 
             match dependency:
@@ -153,10 +155,11 @@ class Misc:
                 case 'RustCheck':
                     RustCheck.download_rust()
 
-        elif missing_headers == False: print(f"Error downloading the needed files: {missing_headers}")
+        elif missing_headers == False: print(f"Error downloading the needed files: {set_to_check}")
         return
 
     def search_for_file_in_dir(file_name, look_for:set, optional_delete=False) -> bool | set:
+        g_found_files:set[str] = set()
         match os.path.isdir(file_name):
             case True:
                 for _, list_of_dir, list_of_files in os.walk(file_name): 
@@ -171,18 +174,15 @@ class Misc:
                             Misc.delete_via_set({(f"{_}\\{i}") for i in list_of_found_files})
                         return True
                     else:     
-                        for subDir in list_of_dir:
-                            if Misc.search_for_file_in_dir(f"{_}\\{subDir}", look_for, optional_delete=optional_delete) == True: 
-                                return True
-                    
-                    match len(list_of_found_files) > 0:
-                        case True:
-                            if len(list_of_found_files) > 0 and optional_delete: 
-                                Misc.delete_via_set({os.join(f"{_}\\{i}") for i in list_of_found_files})
-                            elif len(list_of_found_files) > 0 and not optional_delete:
-                                return True
-                        case 0:
-                            return list_of_missing_files
+                        match len(list_of_found_files) > 0:
+                            case True:
+                                if len(list_of_found_files) > 0 and optional_delete: 
+                                    Misc.delete_via_set({os.join(f"{_}\\{i}") for i in list_of_found_files})
+                                elif (len(list_of_found_files) > 0) and (not optional_delete) and (len(list_of_missing_files) > 0):
+                                    for i in list_of_found_files: g_found_files.add(i)
+                                    look_for = list_of_missing_files
+                            case _:
+                                continue
             case False: 
                 if file_name in look_for:
                     match optional_delete:
@@ -193,9 +193,10 @@ class Misc:
                             return True         
                 else:
                     return False
+        return list_of_missing_files
 
 
 if __name__ == "__main__":
     Misc.check_headers(FFmpegChecks.__name__)
-    # Misc.check_headers(RustCheck.__name__)
-    # RustCheck.check_for_cuda_compatibility()
+    Misc.check_headers(RustCheck.__name__)
+    RustCheck.check_for_cuda_compatibility()
