@@ -390,20 +390,7 @@ pub mod p_hashing {
         let processed_images = process_entries_parallel(&file_paths);
         let store_dup = compare_hashes_parallel(&processed_images);
 
-        if let Ok(r_d) = std::fs::read_dir(".") {
-            for subdir in r_d.flatten() {
-                if let Ok(ft) = subdir.file_type() {
-                    if ft.is_dir() {
-                        let temp_dir_name = subdir.file_name();
-                        if temp_dir_name != "tempDir" {
-                            if let Ok(s) = std::fs::read_dir(&temp_dir_name) {
-                                remove_from_dir(s, &store_dup, "sdf");
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        remove_from_dir(&store_dup, "sdf");
     }
 
     fn collect_files_recursively(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -431,16 +418,19 @@ pub mod p_hashing {
                 match image::open(path) {
                     Ok(img_open) => {
                         let img_hash = utils::p_hashing::return_d_hash(img_open);
-                        let temp_path = match misc::temp_path_for_p_hash(path) {
-                            Ok(path) => path,
-                            Err(e) => {
-                                println!("Error resolving absolute path {path:?}: {e}");
+                        let original_path = match misc::source_path_from_preview(path) {
+                            Some(path) => path,
+                            None => {
+                                eprintln!(
+                                    "Unable to resolve source path for preview {}",
+                                    path.display()
+                                );
                                 return None;
                             }
                         };
                         Some(PHashData {
-                            original_path: path.clone(),
-                            temp_path,
+                            original_path,
+                            temp_path: path.clone(),
                             image_d_hash: img_hash,
                         })
                     }
@@ -482,37 +472,19 @@ pub mod p_hashing {
         collected_dup
     }
 
-    fn remove_from_dir(
-        passed_dir: std::fs::ReadDir,
-        passed_dup: &[std::path::PathBuf],
-        method: &str,
-    ) {
-        for f in passed_dir.flatten() {
-            let file_name = f.file_name();
-            let target_path = f.path();
-
-            let preview_path = match misc::temp_path_for_p_hash(&target_path) {
-                Ok(path) => path,
-                Err(error) => {
-                    eprintln!(
-                        "Unable to resolve preview path for {}: {error}",
-                        target_path.display()
-                    );
-                    continue;
-                }
-            };
-            if !passed_dup.contains(&preview_path) {
-                continue;
-            }
-
+    fn remove_from_dir(passed_dup: &[std::path::PathBuf], method: &str) {
+        for target_path in passed_dup {
+            let file_name = target_path
+                .file_name()
+                .unwrap_or_else(|| target_path.as_os_str());
             println!("Match found for: {file_name:?}");
 
             let should_delete = if method != "f" {
-                delete_dup_preview::ask_to_delete(&target_path)
+                delete_dup_preview::ask_to_delete(target_path)
             } else {
                 #[cfg(target_os = "macos")]
                 {
-                    if let Err(e) = std::process::Command::new("open").arg(&target_path).spawn() {
+                    if let Err(e) = std::process::Command::new("open").arg(target_path).spawn() {
                         println!("Error opening file for preview: {e}");
                     }
                 }
@@ -529,7 +501,7 @@ pub mod p_hashing {
             };
 
             if should_delete {
-                match std::fs::remove_file(&target_path) {
+                match std::fs::remove_file(target_path) {
                     Ok(_) => println!("Deleted: {file_name:?}"),
                     Err(e) => println!("Error deleting file: {e}"),
                 }
@@ -663,6 +635,26 @@ pub mod misc {
         Ok(std::path::PathBuf::from(format!(
             "./tempDir/{absolute_path_string} copy.png"
         )))
+    }
+
+    pub fn source_path_from_preview(preview_path: &std::path::Path) -> Option<std::path::PathBuf> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let relative_path = preview_path.strip_prefix("./tempDir").ok()?;
+            let preview_name = relative_path.file_name()?.to_str()?;
+            let source_name = preview_name.strip_suffix(" copy.png")?;
+            let mut relative_source = relative_path.parent()?.to_path_buf();
+            relative_source.push(source_name);
+            Some(std::path::Path::new("/").join(relative_source))
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let normalized_path = preview_path.to_string_lossy().replace('\\', "/");
+            let relative_path = normalized_path.strip_prefix("./tempDir/")?;
+            let source_path = relative_path.strip_suffix(" copy.png")?;
+            Some(std::path::PathBuf::from(source_path.replace('/', "\\")))
+        }
     }
 
     pub fn flush_the_cache(mode: bool) {
@@ -800,15 +792,16 @@ pub mod misc {
         }
     }
 
-    pub mod delete_dup_preview{
+    pub mod delete_dup_preview {
         use crate::misc;
 
         struct DeleteConfirmationApp {
-            path_to_preview: std::path::PathBuf,
+            source_path: std::path::PathBuf,
             confirm_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
             preview_image: Option<egui::ColorImage>,
             preview_texture: Option<egui::TextureHandle>,
         }
+
         impl eframe::App for DeleteConfirmationApp {
             fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
                 if self.preview_texture.is_none() {
@@ -820,46 +813,50 @@ pub mod misc {
                         ));
                     }
                 }
-    
-                ui.heading("Delete source file?");
-                ui.label(format!("File: {}", self.path_to_preview.display()));
-                ui.add_space(10.0);
-    
-                if let Some(texture) = self.preview_texture.as_ref() {
-                    ui.add(
-                        egui::Image::from_texture(texture)
-                            .max_width(360.0)
-                            .max_height(300.0),
-                    );
-                } else {
-                    ui.label("Unable to load image preview.");
-                }
-    
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Yes, Delete").clicked() {
-                        self.confirm_flag
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.heading("Delete source file?");
+                    ui.label(format!("File: {}", self.source_path.display()));
+                    ui.add_space(10.0);
+
+                    if let Some(texture) = self.preview_texture.as_ref() {
+                        ui.add(
+                            egui::Image::from_texture(texture)
+                                .max_width(360.0)
+                                .max_height(300.0),
+                        );
+                    } else {
+                        ui.label("Unable to load image preview.");
                     }
-                    if ui.button("Cancel").clicked() {
-                        self.confirm_flag
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes, Delete").clicked() {
+                            self.confirm_flag
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.confirm_flag
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
                 });
             }
         }
-    
+
         pub fn ask_to_delete(path_to_preview: &std::path::Path) -> bool {
             let confirm_delete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let confirm_flag = std::sync::Arc::clone(&confirm_delete);
-    
+
             let options = eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 450.0]),
+                #[cfg(target_os = "linux")]
+                renderer: eframe::Renderer::Glow,
                 ..Default::default()
             };
-    
+
             let preview_image = match misc::temp_path_for_p_hash(path_to_preview) {
                 Ok(preview_path) => match image::open(&preview_path) {
                     Ok(image) => Some(image),
@@ -896,14 +893,14 @@ pub mod misc {
                     rgba.as_raw(),
                 )
             });
-    
+
             let app = DeleteConfirmationApp {
-                path_to_preview: path_to_preview.to_path_buf(),
+                source_path: path_to_preview.to_path_buf(),
                 confirm_flag,
                 preview_image,
                 preview_texture: None,
             };
-    
+
             if let Err(error) = eframe::run_native(
                 "Delete Confirmation",
                 options,
@@ -911,12 +908,8 @@ pub mod misc {
             ) {
                 eprintln!("Unable to open delete confirmation window: {error}");
             }
-    
+
             confirm_delete.load(std::sync::atomic::Ordering::Relaxed)
         }
-
-
     }
-    
-
 }

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = "4.6.1"
-eframe = "0.36.1"
+eframe = { version = "0.36.1", features = ["glow"] }
 egui = "0.36.1"
 fast-dhash = "1.1.0"
 ffmpeg-sys-next = "9.0.0"
