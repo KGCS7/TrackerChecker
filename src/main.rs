@@ -25,7 +25,7 @@ fn main() {
                 .id("f")
                 .num_args(1)
                 .value_parser(["true", "false"])
-                .default_missing_value("true")
+                .default_missing_value("false")
                 .default_value("false"),
         )
         .get_matches();
