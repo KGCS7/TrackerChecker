@@ -71,13 +71,7 @@ pub mod p_hashing {
                     }
                 };
 
-                let destination = match misc::temp_path_for_p_hash(p_hash_this) {
-                    Ok(path) => path,
-                    Err(e) => {
-                        println!("Error resolving absolute path {p_hash_this:?}: {e}");
-                        return None;
-                    }
-                };
+                let destination = std::path::PathBuf::from(misc::temp_path_for_p_hash(p_hash_this));
                 match std::fs::read(p_hash_this) {
                     Ok(bytes) => {
                         if let Err(e) = std::fs::write(&destination, bytes) {
@@ -327,26 +321,24 @@ pub mod p_hashing {
                                             ffmpeg_sys_next::sws_freeContext(sws_ctx);
 
                                             if ret > 0 {
-                                                match misc::temp_path_for_p_hash(p_hash_this) {
-                                                    Ok(temp_path) => {
-                                                        misc::create_temp_dir(&temp_path);
+                                                let temp_path =
+                                                    misc::temp_path_for_p_hash(p_hash_this);
+                                                misc::create_temp_dir(std::path::Path::new(
+                                                    &temp_path,
+                                                ));
 
-                                                        if image::save_buffer_with_format(
-                                                            &temp_path,
-                                                            &dst_buf,
-                                                            width as u32,
-                                                            height as u32,
-                                                            image::ColorType::Rgb8,
-                                                            image::ImageFormat::Png,
-                                                        )
-                                                        .is_ok()
-                                                        {
-                                                            result = Some(temp_path);
-                                                        }
-                                                    }
-                                                    Err(e) => println!(
-                                                        "Error resolving absolute path {p_hash_this:?}: {e}"
-                                                    ),
+                                                if image::save_buffer_with_format(
+                                                    &temp_path,
+                                                    &dst_buf,
+                                                    width as u32,
+                                                    height as u32,
+                                                    image::ColorType::Rgb8,
+                                                    image::ImageFormat::Png,
+                                                )
+                                                .is_ok()
+                                                {
+                                                    result =
+                                                        Some(std::path::PathBuf::from(temp_path));
                                                 }
                                             }
                                         }
@@ -616,25 +608,37 @@ pub mod misc {
         }
     }
 
-    pub fn temp_path_for_p_hash(
-        passed_path: &std::path::Path,
-    ) -> Result<std::path::PathBuf, std::io::Error> {
-        let absolute_path = std::path::absolute(passed_path)?;
+    pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
+        let mut path_str = String::new();
 
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let mut absolute_path_string = absolute_path.to_string_lossy().into_owned();
+        for component in passed_path.components() {
+            if let std::path::Component::Normal(os_str) = component {
+                if let Some(s) = os_str.to_str() {
+                    if !path_str.is_empty() {
+                        path_str.push('_');
+                    }
+                    path_str.push_str(s);
+                }
+            }
+        }
 
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        if absolute_path_string.starts_with('/') || absolute_path_string.starts_with('\\') {
-            absolute_path_string.remove(0);
+        if let Some(stem) = passed_path.file_stem().and_then(|s| s.to_str()) {
+            if let Some(idx) = path_str.rfind(stem) {
+                path_str.truncate(idx + stem.len());
+            }
         }
 
         #[cfg(target_os = "windows")]
-        let absolute_path_string = absolute_path.to_string_lossy().replace('/', "\\");
+        {
+            path_str = path_str.replace(['\\', ':', '*', '?', '"', '<', '>', '|', '/'], "_");
+        }
 
-        Ok(std::path::PathBuf::from(format!(
-            "./tempDir/{absolute_path_string} copy.png"
-        )))
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            path_str = path_str.replace('/', "_");
+        }
+
+        format!("./tempDir/{} copy.png", path_str)
     }
 
     pub fn source_path_from_preview(preview_path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -857,32 +861,17 @@ pub mod misc {
                 ..Default::default()
             };
 
-            let preview_image = match misc::temp_path_for_p_hash(path_to_preview) {
-                Ok(preview_path) => match image::open(&preview_path) {
+            let preview_path = misc::temp_path_for_p_hash(path_to_preview);
+            let preview_image = match image::open(&preview_path) {
+                Ok(image) => Some(image),
+                Err(preview_error) => match image::open(path_to_preview) {
                     Ok(image) => Some(image),
-                    Err(preview_error) => match image::open(path_to_preview) {
-                        Ok(image) => Some(image),
-                        Err(source_error) => {
-                            eprintln!(
-                                "Unable to load preview from {} ({preview_error}) or source {} ({source_error})",
-                                preview_path.display(),
-                                path_to_preview.display()
-                            );
-                            None
-                        }
-                    },
-                },
-                Err(error) => {
-                    eprintln!("Unable to resolve media preview path: {error}");
-                    match image::open(path_to_preview) {
-                        Ok(image) => Some(image),
-                        Err(source_error) => {
-                            eprintln!(
-                                "Unable to load source preview {}: {source_error}",
-                                path_to_preview.display()
-                            );
-                            None
-                        }
+                    Err(source_error) => {
+                        eprintln!(
+                            "Unable to load preview from {preview_path} ({preview_error}) or source {} ({source_error})",
+                            path_to_preview.display()
+                        );
+                        None
                     }
                 }
             }
