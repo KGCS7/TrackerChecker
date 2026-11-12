@@ -100,24 +100,35 @@ pub mod p_hashing {
                 };
 
                 unsafe {
-                    let mut fmt_ctx_ptr: *mut ffmpeg_sys_next::AVFormatContext =
-                        std::ptr::null_mut();
-                    if ffmpeg_sys_next::avformat_open_input(
-                        &mut fmt_ctx_ptr,
-                        c_path.as_ptr(),
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                    ) < 0
-                    {
-                        println!("Error opening video format context");
+                    let mut fmt_ctx_ptr: *mut ffmpeg_sys_next::AVFormatContext = std::ptr::null_mut();
+                    let stream_info_result = {
+                        let _log_level_guard = misc::suppress_ffmpeg_messages::FfmpegLogLevelGuard::suppress_warnings();
+
+                        if ffmpeg_sys_next::avformat_open_input(
+                            &mut fmt_ctx_ptr,
+                            c_path.as_ptr(),
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        ) < 0
+                        {
+                            println!("Error opening video format context");
+                            return None;
+                        }
+
+                        ffmpeg_sys_next::avformat_find_stream_info(
+                            fmt_ctx_ptr,
+                            std::ptr::null_mut(),
+                        )
+                    };
+
+                    if stream_info_result < 0 {
+                        println!("Error finding stream info");
+                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
                         return None;
                     }
 
-                    if ffmpeg_sys_next::avformat_find_stream_info(fmt_ctx_ptr, std::ptr::null_mut())
-                        < 0
-                    {
-                        println!("Error finding stream info");
-                        ffmpeg_sys_next::avformat_close_input(&mut fmt_ctx_ptr);
+                    if fmt_ctx_ptr.is_null() {
+                        println!("Error opening video format context");
                         return None;
                     }
 
@@ -600,6 +611,8 @@ pub mod s_hashing {
 }
 
 pub mod misc {
+    const _GIG_FILE_SIZE: u64 = 0x40000000;
+
     pub fn create_temp_dir(extract_from_this_path: &std::path::Path) {
         if let Some(new_dir) = extract_from_this_path.parent() {
             if !new_dir.is_dir() {
@@ -751,7 +764,6 @@ pub mod misc {
         }
     }
 
-    const _GIG_FILE_SIZE: u64 = 0x40000000;
     pub fn _find_and_set_ram_limit() {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
@@ -899,6 +911,39 @@ pub mod misc {
             }
 
             confirm_delete.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+pub mod suppress_ffmpeg_messages {
+        static FFMPEG_LOG_LEVEL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        pub struct FfmpegLogLevelGuard {
+            _lock: std::sync::MutexGuard<'static, ()>,
+            previous_level: i32,
+        }
+
+        impl FfmpegLogLevelGuard {
+            pub fn suppress_warnings() -> Self {
+                let lock = FFMPEG_LOG_LEVEL_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let previous_level = unsafe { ffmpeg_sys_next::av_log_get_level() };
+                unsafe {
+                    ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_ERROR);
+                }
+
+                Self {
+                    _lock: lock,
+                    previous_level,
+                }
+            }
+        }
+
+        impl Drop for FfmpegLogLevelGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    ffmpeg_sys_next::av_log_set_level(self.previous_level);
+                }
+            }
         }
     }
 }
