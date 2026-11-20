@@ -1,5 +1,8 @@
 pub mod p_hashing {
-    use crate::utils::{self, misc::{self, delete_dup_preview}};
+    use crate::utils::{
+        self,
+        misc::{self, delete_dup_preview},
+    };
     use rayon::prelude::*;
 
     pub(crate) fn has_valid_avcc_nal_units(packet: &[u8], nal_length_size: usize) -> bool {
@@ -38,7 +41,7 @@ pub mod p_hashing {
 
     pub struct PHashData {
         pub original_path: std::path::PathBuf,
-        pub temp_path: std::path::PathBuf,
+        pub screenshot_path: std::path::PathBuf,
         pub image_d_hash: fast_dhash::Dhash,
     }
 
@@ -376,14 +379,13 @@ pub mod p_hashing {
                     result
                 }
             }
-            _ => {
-                None
-            }
+            _ => None,
         }
     }
 
     pub fn find_collisions() {
-        let file_paths = collect_files_recursively(std::path::Path::new("./tempDir"));
+        let vec_of_p_hash: std::collections::BTreeMap<std::path::PathBuf, PHashData> = std::collections::BTreeMap::new();
+        let file_paths = collect_files_recursively(&vec_of_p_hash, std::path::Path::new("./tempDir"));
 
         if file_paths.is_empty() {
             println!("No files found in ./tempDir");
@@ -393,16 +395,19 @@ pub mod p_hashing {
         let processed_images = process_entries_parallel(&file_paths);
         let store_dup = compare_hashes_parallel(&processed_images);
 
-        remove_from_dir(&store_dup, "sdf");
+        remove_from_dir(&store_dup, "p");
     }
 
-    fn collect_files_recursively(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn collect_files_recursively(
+        build_phash_data: &std::collections::BTreeMap<std::path::PathBuf, PHashData>,
+        dir: &std::path::Path,
+    ) -> Vec<std::path::PathBuf> {
         let mut files = Vec::new();
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    files.extend(collect_files_recursively(&path));
+                    files.extend(collect_files_recursively(&build_phash_data, &path));
                 } else if path.is_file() {
                     files.push(path);
                 }
@@ -415,14 +420,14 @@ pub mod p_hashing {
         file_paths
             .par_iter()
             .filter_map(|path| {
-                if let Some(file_name) = path.file_name() {
+                if let Some(file_name) = path.to_str() {
                     println!("Current File we are processing: {:#?}", file_name);
                 }
                 match image::open(path) {
                     Ok(img_open) => {
                         let img_hash = utils::p_hashing::return_d_hash(img_open);
                         let original_path = match misc::source_path_from_preview(path) {
-                            Some(path) => path,
+                            Some(screenshot) => screenshot,
                             None => {
                                 eprintln!(
                                     "Unable to resolve source path for preview {}",
@@ -433,7 +438,7 @@ pub mod p_hashing {
                         };
                         Some(PHashData {
                             original_path,
-                            temp_path: path.clone(),
+                            screenshot_path: path.clone(),
                             image_d_hash: img_hash,
                         })
                     }
@@ -461,9 +466,9 @@ pub mod p_hashing {
                     if similarity >= 0.90 {
                         println!(
                             "\tFound similarity comparing {:?} to {:?}",
-                            comp.temp_path, target.temp_path
+                            comp.original_path, target.original_path
                         );
-                        Some(target.original_path.clone())
+                        Some(target.screenshot_path.clone())
                     } else {
                         None
                     }
@@ -555,10 +560,10 @@ pub mod p_hashing {
 
 pub mod s_hashing {
     use sha2::{Digest, digest::array::Array};
-    pub fn compare_hash_library(
+    pub fn compare_hash_library<'a>(
         hash_to_check: Array<u8, typenum::U32>,
-        file_name: &str,
-        check_here: &mut std::collections::BTreeMap<Array<u8, typenum::U32>, String>,
+        file_name: &'a str,
+        check_here: &mut std::collections::BTreeMap<Array<u8, typenum::U32>, &'a str>,
     ) {
         if let Some(dup) = check_here.get(&hash_to_check) {
             std::println!(
@@ -568,13 +573,13 @@ pub mod s_hashing {
             );
         } else {
             std::println!("New entry {:#?} for {}", hash_to_check, file_name);
-            check_here.insert(hash_to_check, file_name.to_string());
+            check_here.insert(hash_to_check, file_name);
         }
     }
 
-    pub fn add_hash_from_path(
-        path_name: &std::path::Path,
-        add_here: &mut std::collections::BTreeMap<Array<u8, typenum::U32>, String>,
+    pub fn add_hash_from_path<'a>(
+        path_name: &'a std::path::Path,
+        add_here: &mut std::collections::BTreeMap<Array<u8, typenum::U32>, &'a str>,
     ) {
         let fd = std::fs::File::open(path_name);
         match fd {
@@ -611,44 +616,81 @@ pub mod s_hashing {
 }
 
 pub mod misc {
+    use crate::utils::p_hashing::PHashData;
+
     const _GIG_FILE_SIZE: u64 = 0x40000000;
+
+    pub(crate) trait DirectoryHashMap {
+        fn process_file(
+            &mut self, 
+            path: std::path::PathBuf, 
+            method: &str, 
+            bitwise_paths: &mut Vec<std::path::PathBuf>,);
+    }
+
+    impl DirectoryHashMap
+        for std::collections::BTreeMap<sha2::digest::array::Array<u8, typenum::U32>, PHashData>{
+            fn process_file(
+                &mut self, 
+                path: std::path::PathBuf, 
+                method: &str, 
+                _bitwise_paths: &mut Vec<std::path::PathBuf>){
+                    if method == "p" {crate::utils::p_hashing::add_p_hash_for_media(&path);} 
+                    else {std::println!("Unable to match the method {:#?} with one of the options",method);}
+            }
+    }
+
+    impl<'a> DirectoryHashMap
+        for std::collections::BTreeMap<sha2::digest::array::Array<u8, typenum::U32>, &'a str,>{
+            fn process_file(
+                &mut self,
+                path: std::path::PathBuf,
+                method: &str,
+                bitwise_paths: &mut Vec<std::path::PathBuf>,
+            ) {
+                if method == "b" {
+                    bitwise_paths.push(path);
+                } else {
+                    std::println!(
+                        "Unable to match the method {:#?} with one of the options",
+                        method
+                    );
+                }
+            }
+        }
 
     pub fn create_temp_dir(extract_from_this_path: &std::path::Path) {
         if let Some(new_dir) = extract_from_this_path.parent() {
-            if !new_dir.is_dir() {
-                std::fs::create_dir_all(new_dir).expect("msg");
-            }
+            if !new_dir.is_dir() {std::fs::create_dir_all(new_dir).expect("msg");}
         }
     }
 
     pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
         let mut path_str = String::new();
 
-        for component in passed_path.components() {
-            if let std::path::Component::Normal(os_str) = component {
-                if let Some(s) = os_str.to_str() {
-                    if !path_str.is_empty() {
-                        path_str.push('_');
+        match std::fs::exists(passed_path) {
+            Ok(no_problem_path) => {
+                if no_problem_path.eq(&true) {
+                    let num_of_components = passed_path.components().count();
+                    let file_parent: usize = num_of_components - 2;
+                    if num_of_components.eq(&2) {
+                        path_str = passed_path.to_str().unwrap().to_string();
+                    } else if num_of_components.gt(&2) {
+                        let mut comp_ind: usize = 0;
+                        let mut comp = passed_path.components();
+                        loop {
+                            if comp_ind.eq(&file_parent) {
+                                path_str.push_str(comp.as_path().as_os_str().to_str().unwrap());
+                                break;
+                            } else {
+                                comp_ind += 1;
+                                comp.next();
+                            }
+                        }
                     }
-                    path_str.push_str(s);
                 }
             }
-        }
-
-        if let Some(stem) = passed_path.file_stem().and_then(|s| s.to_str()) {
-            if let Some(idx) = path_str.rfind(stem) {
-                path_str.truncate(idx + stem.len());
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            path_str = path_str.replace(['\\', ':', '*', '?', '"', '<', '>', '|', '/'], "_");
-        }
-
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            path_str = path_str.replace('/', "_");
+            Err(e) => {}
         }
 
         format!("./tempDir/{} copy.png", path_str)
@@ -709,24 +751,26 @@ pub mod misc {
         }
     }
 
-    pub fn go_thru_dir(
-        walk_thru: &mut std::path::Path,
-        add_here: &mut std::collections::BTreeMap<
-            sha2::digest::array::Array<u8, typenum::U32>,
-            String,
-        >,
+    pub fn go_thru_dir<T: DirectoryHashMap>(
+        walk_thru: std::path::PathBuf,
+        add_here: &mut T,
         method: &str,
+        bitwise_paths: &mut Vec<std::path::PathBuf>,
     ) {
-        use crate::utils;
-        match std::fs::metadata(&mut *walk_thru) {
+        match std::fs::metadata(&walk_thru) {
             Ok(file_descriptor_info) => {
                 if file_descriptor_info.is_dir() {
-                    match std::fs::read_dir(walk_thru) {
+                    match std::fs::read_dir(&walk_thru) {
                         Ok(go_thru) => {
                             for file in go_thru {
                                 match file {
                                     Ok(try_this) => {
-                                        go_thru_dir(&mut try_this.path(), add_here, method);
+                                        go_thru_dir(
+                                            try_this.path(),
+                                            add_here,
+                                            method,
+                                            bitwise_paths,
+                                        );
                                     }
                                     Err(e) => {
                                         std::println!("Error {}", e);
@@ -741,16 +785,7 @@ pub mod misc {
                 } else if file_descriptor_info.is_file() {
                     match std::fs::File::open(&walk_thru) {
                         Ok(_) => {
-                            if method.eq("p") {
-                                utils::p_hashing::add_p_hash_for_media(&walk_thru);
-                            } else if method.eq("b") {
-                                utils::s_hashing::add_hash_from_path(&walk_thru, add_here);
-                            } else {
-                                std::println!(
-                                    "Unable to match the method {:#?} with one of the options",
-                                    method
-                                );
-                            }
+                            add_here.process_file(walk_thru, method, bitwise_paths);
                         }
                         Err(e) => {
                             std::println!("Error in Computing Hash From Path{}", e);
@@ -809,8 +844,6 @@ pub mod misc {
     }
 
     pub mod delete_dup_preview {
-        use crate::misc;
-
         struct DeleteConfirmationApp {
             source_path: std::path::PathBuf,
             confirm_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -873,14 +906,13 @@ pub mod misc {
                 ..Default::default()
             };
 
-            let preview_path = misc::temp_path_for_p_hash(path_to_preview);
-            let preview_image = match image::open(&preview_path) {
+            let preview_image = match image::open(&path_to_preview) {
                 Ok(image) => Some(image),
                 Err(preview_error) => match image::open(path_to_preview) {
                     Ok(image) => Some(image),
                     Err(source_error) => {
                         eprintln!(
-                            "Unable to load preview from {preview_path} ({preview_error}) or source {} ({source_error})",
+                            "Unable to load preview from ({preview_error}) or source {} ({source_error})",
                             path_to_preview.display()
                         );
                         None
@@ -913,7 +945,7 @@ pub mod misc {
             confirm_delete.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
-pub mod suppress_ffmpeg_messages {
+    pub mod suppress_ffmpeg_messages {
         static FFMPEG_LOG_LEVEL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
         pub struct FfmpegLogLevelGuard {

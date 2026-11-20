@@ -1,6 +1,6 @@
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 mod utils;
-use crate::utils::{misc, p_hashing};
+use crate::utils::{misc, p_hashing::{self, PHashData}};
 
 fn main() {
     let m = clap::Command::new("TorrentChecker")
@@ -31,19 +31,18 @@ fn main() {
         .get_matches();
 
     misc::flush_the_cache(true);
-    let mut file_hash: std::collections::BTreeMap<
-        sha2::digest::array::Array<u8, typenum::U32>,
-        String,
-    > = std::collections::BTreeMap::new();
 
     if m.contains_id("pc") {
+        let mut bitwise_paths = Vec::new();
+        let mut file_hash: std::collections::BTreeMap<sha2::digest::array::Array<u8, typenum::U32>, PHashData> = std::collections::BTreeMap::new();
         match m.get_raw("pc") {
             Some(i) => {
                 for file in i {
                     utils::misc::go_thru_dir(
-                        &mut std::path::PathBuf::from(file),
+                        std::path::PathBuf::from(file),
                         &mut file_hash,
                         "p",
+                        &mut bitwise_paths,
                     );
                 }
             }
@@ -53,16 +52,23 @@ fn main() {
         };
         p_hashing::find_collisions();
     } else if m.contains_id("bc") {
+        let mut bitwise_paths = Vec::new();
+        let mut zero_tolerance_hash:
+            std::collections::BTreeMap<sha2::digest::array::Array<u8, typenum::U32 >, &str> = std::collections::BTreeMap::new();
         let temp_variable: Option<clap::parser::RawValues<'_>> = m.get_raw("bc");
         match temp_variable {
             Some(i) => {
                 for file in i {
                     println!("Found path of: {:#?}", file);
                     utils::misc::go_thru_dir(
-                        &mut std::path::PathBuf::from(file),
-                        &mut file_hash,
+                        std::path::PathBuf::from(file),
+                        &mut zero_tolerance_hash,
                         "b",
+                        &mut bitwise_paths,
                     );
+                }
+                for path in &bitwise_paths {
+                    utils::s_hashing::add_hash_from_path(path, &mut zero_tolerance_hash);
                 }
             }
             None => {
