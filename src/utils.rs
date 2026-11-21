@@ -293,20 +293,38 @@ pub mod p_hashing {
                                         let width = (*frame).width;
                                         let height = (*frame).height;
 
-                                        let mut dst_buf =
-                                            vec![0u8; (width as usize) * (height as usize) * 3];
                                         let mut dst_data: [*mut u8; 8] = [std::ptr::null_mut(); 8];
                                         let mut dst_linesize: [i32; 8] = [0; 8];
-
-                                        dst_data[0] = dst_buf.as_mut_ptr();
-                                        dst_linesize[0] = 3 * width;
-
-                                        let frame_format: ffmpeg_sys_next::AVPixelFormat;
-                                        match frame.as_ref().expect("msg").format {
-                                            num => {
-                                                frame_format = std::mem::transmute(num);
-                                            }
+                                        if width <= 0 || height <= 0 {
+                                            ffmpeg_sys_next::av_frame_unref(frame);
+                                            continue;
                                         }
+                                        let allocation_result = ffmpeg_sys_next::av_image_alloc(
+                                            dst_data.as_mut_ptr(),
+                                            dst_linesize.as_mut_ptr(),
+                                            width,
+                                            height,
+                                            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
+                                            32,
+                                        );
+                                        if allocation_result < 0 {
+                                            ffmpeg_sys_next::av_frame_unref(frame);
+                                            continue;
+                                        }
+
+                                        let frame_format_value = (*frame).format;
+                                        let pixel_format_count =
+                                            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NB as i32;
+                                        if !(0..pixel_format_count).contains(&frame_format_value) {
+                                            ffmpeg_sys_next::av_freep(
+                                                &mut dst_data[0] as *mut *mut u8
+                                                    as *mut std::ffi::c_void,
+                                            );
+                                            ffmpeg_sys_next::av_frame_unref(frame);
+                                            continue;
+                                        }
+                                        let frame_format: ffmpeg_sys_next::AVPixelFormat =
+                                            std::mem::transmute(frame_format_value);
 
                                         let sws_ctx = ffmpeg_sys_next::sws_getContext(
                                             width,
@@ -334,28 +352,59 @@ pub mod p_hashing {
 
                                             ffmpeg_sys_next::sws_freeContext(sws_ctx);
 
-                                            if ret > 0 {
-                                                let temp_path =
-                                                    misc::temp_path_for_p_hash(p_hash_this);
-                                                misc::create_temp_dir(std::path::Path::new(
-                                                    &temp_path,
-                                                ));
+                                            if ret == height {
+                                                let buffer_size =
+                                                    ffmpeg_sys_next::av_image_get_buffer_size(
+                                                        ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
+                                                        width,
+                                                        height,
+                                                        1,
+                                                    );
+                                                if buffer_size > 0 {
+                                                    let mut dst_buf =
+                                                        vec![0u8; buffer_size as usize];
+                                                    let copy_result =
+                                                        ffmpeg_sys_next::av_image_copy_to_buffer(
+                                                            dst_buf.as_mut_ptr(),
+                                                            buffer_size,
+                                                            dst_data.as_ptr()
+                                                                as *const *const u8,
+                                                            dst_linesize.as_ptr(),
+                                                            ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24,
+                                                            width,
+                                                            height,
+                                                            1,
+                                                        );
+                                                    if copy_result == buffer_size {
+                                                        let temp_path =
+                                                            misc::temp_path_for_p_hash(p_hash_this);
+                                                        misc::create_temp_dir(
+                                                            std::path::Path::new(&temp_path),
+                                                        );
 
-                                                if image::save_buffer_with_format(
-                                                    &temp_path,
-                                                    &dst_buf,
-                                                    width as u32,
-                                                    height as u32,
-                                                    image::ColorType::Rgb8,
-                                                    image::ImageFormat::Png,
-                                                )
-                                                .is_ok()
-                                                {
-                                                    result =
-                                                        Some(std::path::PathBuf::from(temp_path));
+                                                        if image::save_buffer_with_format(
+                                                            &temp_path,
+                                                            &dst_buf,
+                                                            width as u32,
+                                                            height as u32,
+                                                            image::ColorType::Rgb8,
+                                                            image::ImageFormat::Png,
+                                                        )
+                                                        .is_ok()
+                                                        {
+                                                            result = Some(
+                                                                std::path::PathBuf::from(temp_path),
+                                                            );
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+
+                                        ffmpeg_sys_next::av_freep(
+                                            &mut dst_data[0] as *mut *mut u8
+                                                as *mut std::ffi::c_void,
+                                        );
                                     }
                                     ffmpeg_sys_next::av_frame_unref(frame);
                                 }
@@ -459,8 +508,9 @@ pub mod p_hashing {
         let mut collected_dup: Vec<std::path::PathBuf> = images
             .par_iter()
             .enumerate()
-            .flat_map_iter(|(i, target)| {
-                images[i + 1..].iter().filter_map(move |comp| {
+            .filter_map(|(i, target)| {
+                let mut is_duplicate = false;
+                for comp in &images[i + 1..] {
                     let h_d = target.image_d_hash.hamming_distance(&comp.image_d_hash);
                     let similarity = 1.0 - (h_d as f64 / 64.0);
                     if similarity >= 0.90 {
@@ -468,11 +518,11 @@ pub mod p_hashing {
                             "\tFound similarity comparing {:?} to {:?}",
                             comp.original_path, target.original_path
                         );
-                        Some(target.screenshot_path.clone())
-                    } else {
-                        None
+                        is_duplicate = true;
                     }
-                })
+                }
+
+                is_duplicate.then(|| target.screenshot_path.clone())
             })
             .collect();
         collected_dup.sort_unstable();
@@ -666,34 +716,84 @@ pub mod misc {
     }
 
     pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
-        let mut path_str = String::new();
+        #[cfg(target_os = "windows")]
+        {
+            use std::path::{Component, Prefix};
 
-        match std::fs::exists(passed_path) {
-            Ok(no_problem_path) => {
-                if no_problem_path.eq(&true) {
-                    let num_of_components = passed_path.components().count();
-                    let file_parent: usize = num_of_components - 2;
-                    if num_of_components.eq(&2) {
-                        path_str = passed_path.to_str().unwrap().to_string();
-                    } else if num_of_components.gt(&2) {
-                        let mut comp_ind: usize = 0;
-                        let mut comp = passed_path.components();
-                        loop {
-                            if comp_ind.eq(&file_parent) {
-                                path_str.push_str(comp.as_path().as_os_str().to_str().unwrap());
-                                break;
-                            } else {
-                                comp_ind += 1;
-                                comp.next();
+            let mut preview_path = std::path::PathBuf::from("./tempDir");
+            let mut components = passed_path.components();
+            match components.next() {
+                Some(Component::Prefix(prefix)) => match prefix.kind() {
+                    Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                        preview_path.push(format!("drive_{}", char::from(drive)));
+                    }
+                    Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                        preview_path.push("unc");
+                        preview_path.push(server);
+                        preview_path.push(share);
+                    }
+                    _ => preview_path.push("other"),
+                },
+                Some(component) => {
+                    preview_path.push("relative");
+                    match component {
+                        Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+                        Component::ParentDir => preview_path.push("_parent"),
+                        Component::Normal(name) => preview_path.push(name),
+                    }
+                }
+                None => preview_path.push("relative"),
+            }
+
+            for component in components {
+                match component {
+                    Component::RootDir | Component::CurDir => {}
+                    Component::Prefix(_) => unreachable!("path prefix must be the first component"),
+                    Component::ParentDir => preview_path.push("_parent"),
+                    Component::Normal(name) => preview_path.push(name),
+                }
+            }
+
+            let Some(file_name) = preview_path.file_name() else {
+                return String::new();
+            };
+            let mut preview_name = file_name.to_os_string();
+            preview_name.push(" copy.png");
+            preview_path.set_file_name(preview_name);
+            return preview_path.to_string_lossy().into_owned();
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut path_str = String::new();
+
+            match std::fs::exists(passed_path) {
+                Ok(no_problem_path) => {
+                    if no_problem_path.eq(&true) {
+                        let num_of_components = passed_path.components().count();
+                        let file_parent: usize = num_of_components - 2;
+                        if num_of_components.eq(&2) {
+                            path_str = passed_path.to_str().unwrap().to_string();
+                        } else if num_of_components.gt(&2) {
+                            let mut comp_ind: usize = 0;
+                            let mut comp = passed_path.components();
+                            loop {
+                                if comp_ind.eq(&file_parent) {
+                                    path_str.push_str(comp.as_path().as_os_str().to_str().unwrap());
+                                    break;
+                                } else {
+                                    comp_ind += 1;
+                                    comp.next();
+                                }
                             }
                         }
                     }
                 }
+                Err(e) => {}
             }
-            Err(e) => {}
-        }
 
-        format!("./tempDir/{} copy.png", path_str)
+            format!("./tempDir/{} copy.png", path_str)
+        }
     }
 
     pub fn source_path_from_preview(preview_path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -711,8 +811,35 @@ pub mod misc {
         {
             let normalized_path = preview_path.to_string_lossy().replace('\\', "/");
             let relative_path = normalized_path.strip_prefix("./tempDir/")?;
-            let source_path = relative_path.strip_suffix(" copy.png")?;
-            Some(std::path::PathBuf::from(source_path.replace('/', "\\")))
+            let mut components: Vec<_> = relative_path.split('/').collect();
+            let preview_name = components.pop()?;
+            let source_name = preview_name.strip_suffix(" copy.png")?;
+            let root = components.first().copied()?;
+
+            let mut source_path = if let Some(drive) = root.strip_prefix("drive_") {
+                components.remove(0);
+                std::path::PathBuf::from(format!("{drive}:\\"))
+            } else if root == "unc" {
+                if components.len() < 3 {
+                    return None;
+                }
+                components.remove(0);
+                let server = components.remove(0);
+                let share = components.remove(0);
+                std::path::PathBuf::from(format!("\\\\{server}\\{share}"))
+            } else if root == "relative" {
+                components.remove(0);
+                std::path::PathBuf::new()
+            } else {
+                components.remove(0);
+                std::path::PathBuf::from(root)
+            };
+
+            for component in components {
+                source_path.push(component);
+            }
+            source_path.push(source_name);
+            Some(source_path)
         }
     }
 
