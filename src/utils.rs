@@ -484,9 +484,11 @@ pub mod p_hashing {
                                 return None;
                             }
                         };
+                        let screenshot_path =
+                            misc::truncated_screenshot_path(&original_path);
                         Some(PHashData {
                             original_path,
-                            screenshot_path: path.clone(),
+                            screenshot_path,
                             image_d_hash: img_hash,
                         })
                     }
@@ -499,12 +501,14 @@ pub mod p_hashing {
             .collect()
     }
 
-    fn compare_hashes_parallel(images: &[PHashData]) -> Vec<std::path::PathBuf> {
+    fn compare_hashes_parallel<'a>(
+        images: &'a [PHashData],
+    ) -> Vec<(std::path::PathBuf, &'a std::path::Path)> {
         if images.is_empty() {
             return Vec::new();
         }
 
-        let mut collected_dup: Vec<std::path::PathBuf> = images
+        let mut collected_dup: Vec<(std::path::PathBuf, &std::path::Path)> = images
             .par_iter()
             .enumerate()
             .filter_map(|(i, target)| {
@@ -515,29 +519,34 @@ pub mod p_hashing {
                     if similarity >= 0.90 {
                         println!(
                             "\tFound similarity comparing {:?} to {:?}",
-                            comp.original_path, target.original_path
+                            comp.screenshot_path, target.screenshot_path
                         );
                         is_duplicate = true;
                     }
                 }
 
-                is_duplicate.then(|| target.screenshot_path.clone())
+                is_duplicate.then(|| {
+                    (
+                        std::path::PathBuf::from(misc::temp_path_for_p_hash(&target.original_path)),
+                        target.screenshot_path.as_path(),
+                    )
+                })
             })
             .collect();
-        collected_dup.sort_unstable();
-        collected_dup.dedup();
+        collected_dup.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        collected_dup.dedup_by(|left, right| left.0 == right.0);
         collected_dup
     }
 
-    fn remove_from_dir(passed_dup: &[std::path::PathBuf], method: &str) {
-        for target_path in passed_dup {
-            let file_name = target_path
+    fn remove_from_dir(passed_dup: &[(std::path::PathBuf, &std::path::Path)], method: &str) {
+        for (target_path, screenshot_path) in passed_dup {
+            let file_name = screenshot_path
                 .file_name()
-                .unwrap_or_else(|| target_path.as_os_str());
+                .unwrap_or_else(|| screenshot_path.as_os_str());
             println!("Match found for: {file_name:?}");
 
             let should_delete = if method != "f" {
-                delete_dup_preview::ask_to_delete(target_path)
+                delete_dup_preview::ask_to_delete(target_path, screenshot_path)
             } else {
                 #[cfg(target_os = "macos")]
                 {
@@ -714,6 +723,63 @@ pub mod misc {
         }
     }
 
+    pub fn truncated_screenshot_path(original_path: &std::path::Path) -> std::path::PathBuf {
+        let current_dir =
+            std::env::current_dir().expect("Unable to determine the current directory");
+        let relative_path = original_path
+            .strip_prefix(&current_dir)
+            .unwrap_or(original_path);
+        if !relative_path.as_os_str().is_empty() && relative_path != original_path {
+            return relative_path.to_path_buf();
+        }
+
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            for (marker_index, component) in original_path.components().enumerate() {
+                let is_user_directory = match component {
+                    std::path::Component::Normal(name) => name == "Users" || name == "home",
+                    _ => false,
+                };
+                let first_relative_component = marker_index + 2;
+                if is_user_directory {
+                    let mut relative_path = std::path::PathBuf::new();
+                    for component in original_path.components().skip(first_relative_component) {
+                        relative_path.push(component.as_os_str());
+                    }
+                    if !relative_path.as_os_str().is_empty() {
+                        return relative_path;
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::path::Component;
+
+            for (marker_index, component) in original_path.components().enumerate() {
+                let is_user_directory = match component {
+                    Component::Normal(name) => {
+                        name.eq_ignore_ascii_case(std::ffi::OsStr::new("Users"))
+                    }
+                    _ => false,
+                };
+                let first_relative_component = marker_index + 2;
+                if is_user_directory {
+                    let mut relative_path = std::path::PathBuf::new();
+                    for component in original_path.components().skip(first_relative_component) {
+                        relative_path.push(component.as_os_str());
+                    }
+                    if !relative_path.as_os_str().is_empty() {
+                        return relative_path;
+                    }
+                }
+            }
+        }
+
+        original_path.to_path_buf()
+    }
+
     pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
         #[cfg(target_os = "windows")]
         {
@@ -764,34 +830,28 @@ pub mod misc {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let mut path_str = String::new();
-
-            match std::fs::exists(passed_path) {
-                Ok(no_problem_path) => {
-                    if no_problem_path.eq(&true) {
-                        let num_of_components = passed_path.components().count();
-                        let file_parent: usize = num_of_components - 2;
-                        if num_of_components.eq(&2) {
-                            path_str = passed_path.to_str().unwrap().to_string();
-                        } else if num_of_components.gt(&2) {
-                            let mut comp_ind: usize = 0;
-                            let mut comp = passed_path.components();
-                            loop {
-                                if comp_ind.eq(&file_parent) {
-                                    path_str.push_str(comp.as_path().as_os_str().to_str().unwrap());
-                                    break;
-                                } else {
-                                    comp_ind += 1;
-                                    comp.next();
-                                }
-                            }
-                        }
-                    }
+            let mut relative_path = truncated_screenshot_path(passed_path);
+            if relative_path.is_absolute() {
+                let mut fallback_path = std::path::PathBuf::new();
+                if let Some(parent_name) = passed_path.parent().and_then(std::path::Path::file_name)
+                {
+                    fallback_path.push(parent_name);
                 }
-                Err(e) => {}
+                if let Some(file_name) = passed_path.file_name() {
+                    fallback_path.push(file_name);
+                }
+                relative_path = fallback_path;
             }
 
-            format!("./tempDir/{} copy.png", path_str)
+            let mut preview_path = std::path::PathBuf::from("./tempDir");
+            preview_path.push(relative_path);
+            let Some(file_name) = preview_path.file_name() else {
+                return String::new();
+            };
+            let mut preview_name = file_name.to_os_string();
+            preview_name.push(" copy.png");
+            preview_path.set_file_name(preview_name);
+            preview_path.to_string_lossy().into_owned()
         }
     }
 
@@ -803,7 +863,15 @@ pub mod misc {
             let source_name = preview_name.strip_suffix(" copy.png")?;
             let mut relative_source = relative_path.parent()?.to_path_buf();
             relative_source.push(source_name);
-            Some(std::path::Path::new("/").join(relative_source))
+            let current_dir = std::env::current_dir().ok()?;
+            let source_path = current_dir.join(&relative_source);
+            if source_path.exists() {
+                return Some(source_path);
+            }
+
+            let home_dir = std::env::var_os("HOME")?;
+            let source_path = std::path::PathBuf::from(home_dir).join(relative_source);
+            source_path.exists().then_some(source_path)
         }
 
         #[cfg(target_os = "windows")]
@@ -971,7 +1039,7 @@ pub mod misc {
 
     pub mod delete_dup_preview {
         struct DeleteConfirmationApp {
-            source_path: std::path::PathBuf,
+            screenshot_path: std::path::PathBuf,
             confirm_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
             preview_image: Option<egui::ColorImage>,
             preview_texture: Option<egui::TextureHandle>,
@@ -991,7 +1059,7 @@ pub mod misc {
 
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.heading("Delete source file?");
-                    ui.label(format!("File: {}", self.source_path.display()));
+                    ui.label(format!("File: {}", self.screenshot_path.display()));
                     ui.add_space(10.0);
 
                     if let Some(texture) = self.preview_texture.as_ref() {
@@ -1021,7 +1089,10 @@ pub mod misc {
             }
         }
 
-        pub fn ask_to_delete(path_to_preview: &std::path::Path) -> bool {
+        pub fn ask_to_delete(
+            path_to_preview: &std::path::Path,
+            screenshot_path: &std::path::Path,
+        ) -> bool {
             let confirm_delete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let confirm_flag = std::sync::Arc::clone(&confirm_delete);
 
@@ -1054,7 +1125,7 @@ pub mod misc {
             });
 
             let app = DeleteConfirmationApp {
-                source_path: path_to_preview.to_path_buf(),
+                screenshot_path: screenshot_path.to_path_buf(),
                 confirm_flag,
                 preview_image,
                 preview_texture: None,
