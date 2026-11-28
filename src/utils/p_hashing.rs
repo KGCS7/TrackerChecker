@@ -70,8 +70,7 @@ pub fn add_p_hash_for_media(p_hash_this: &std::path::Path) -> Option<std::path::
                 }
             };
 
-            let destination =
-                std::path::PathBuf::from(utils::misc::temp_path_for_p_hash(p_hash_this));
+            let destination = utils::misc::temp_path_for_p_hash(p_hash_this);
             match std::fs::read(p_hash_this) {
                 Ok(bytes) => {
                     if let Err(e) = std::fs::write(&destination, bytes) {
@@ -365,9 +364,7 @@ pub fn add_p_hash_for_media(p_hash_this: &std::path::Path) -> Option<std::path::
                                                         utils::misc::temp_path_for_p_hash(
                                                             p_hash_this,
                                                         );
-                                                    utils::misc::create_temp_dir(
-                                                        std::path::Path::new(&temp_path),
-                                                    );
+                                                    utils::misc::create_temp_dir(&temp_path);
 
                                                     if image::save_buffer_with_format(
                                                         &temp_path,
@@ -514,9 +511,7 @@ fn compare_hashes_parallel<'a>(
 
             is_duplicate.then(|| {
                 (
-                    std::path::PathBuf::from(utils::misc::temp_path_for_p_hash(
-                        &target.original_path,
-                    )),
+                    utils::misc::temp_path_for_p_hash(&target.original_path),
                     target.screenshot_path.as_path(),
                 )
             })

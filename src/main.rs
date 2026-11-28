@@ -20,6 +20,13 @@ fn main() {
             .num_args(1..),
         )
         .arg(
+            clap::arg!(
+                -x --skip ["Path1 Path2 ... PathN"] "skip paths from hashing"
+            )
+            .id("skip")
+            .num_args(1..),
+        )
+        .arg(
             clap::arg!(-f - -force)
                 .id("f")
                 .num_args(1)
@@ -28,6 +35,13 @@ fn main() {
                 .default_value("false"),
         )
         .get_matches();
+
+    let excluded_paths = m
+        .get_raw("skip")
+        .into_iter()
+        .flatten()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
 
     utils::misc::flush_the_cache(true);
 
@@ -44,6 +58,7 @@ fn main() {
                         &mut file_hash,
                         "p",
                         &mut bitwise_paths,
+                        &excluded_paths,
                     );
                 }
             }
@@ -66,6 +81,7 @@ fn main() {
                         &mut zero_tolerance_hash,
                         "b",
                         &mut bitwise_paths,
+                        &excluded_paths,
                     );
                 }
                 for path in &bitwise_paths {

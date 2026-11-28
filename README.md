@@ -46,6 +46,9 @@ Denoted by <code>-p</code> or <code>-pc</code> followed by <code>First Path</cod
 ### Bitwise Hashing
 Denoted by <code>-b</code> or <code>-bw</code> followed by <code>First Path</code> <code>Second Path </code>... <code>Last Path</code>, the program will go through each file in all paths supplied create a hash based on the contents of the file. If a single bit is off, then the program will flag the files as different. <br><br>    
 
+### Excluding Paths
+Use <code>-x</code> or <code>--skip</code> with one or more paths alongside either hashing option to skip those paths and their contents.
+
 # Configure.py
 A python file [./installScripts/Configure.py](./installScripts/Configure.py) is provided that could be ran before the first use of the program. [./installScripts/Configure.py](./installScripts/Configure.py) scans PATH environments and known default download locations for dependencies needed for the program to run properly. If the program detects any missing files, it will attempt to download them. 
 

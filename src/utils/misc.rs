@@ -115,7 +115,7 @@ pub fn truncated_screenshot_path(original_path: &std::path::Path) -> std::path::
     original_path.to_path_buf()
 }
 
-pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
+pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> std::path::PathBuf {
     #[cfg(target_os = "windows")]
     {
         use std::path::{Component, Prefix};
@@ -155,12 +155,12 @@ pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
         }
 
         let Some(file_name) = preview_path.file_name() else {
-            return String::new();
+            return std::path::PathBuf::new();
         };
         let mut preview_name = file_name.to_os_string();
         preview_name.push(" copy.png");
         preview_path.set_file_name(preview_name);
-        return preview_path.to_string_lossy().into_owned();
+        return preview_path;
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -180,23 +180,25 @@ pub fn temp_path_for_p_hash(passed_path: &std::path::Path) -> String {
         let mut preview_path = std::path::PathBuf::from("./tempDir");
         preview_path.push(relative_path);
         let Some(file_name) = preview_path.file_name() else {
-            return String::new();
+            return std::path::PathBuf::new();
         };
         let mut preview_name = file_name.to_os_string();
         preview_name.push(" copy.png");
         preview_path.set_file_name(preview_name);
-        preview_path.to_string_lossy().into_owned()
+        preview_path
     }
 }
 
 pub fn source_path_from_preview(preview_path: &std::path::Path) -> Option<std::path::PathBuf> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
         let relative_path = preview_path.strip_prefix("./tempDir").ok()?;
-        let preview_name = relative_path.file_name()?.to_str()?;
-        let source_name = preview_name.strip_suffix(" copy.png")?;
+        let preview_name = relative_path.file_name()?;
+        let source_name = preview_name.as_bytes().strip_suffix(b" copy.png")?;
         let mut relative_source = relative_path.parent()?.to_path_buf();
-        relative_source.push(source_name);
+        relative_source.push(std::ffi::OsString::from_vec(source_name.to_vec()));
         let current_dir = std::env::current_dir().ok()?;
         let source_path = current_dir.join(&relative_source);
         if source_path.exists() {
@@ -210,30 +212,40 @@ pub fn source_path_from_preview(preview_path: &std::path::Path) -> Option<std::p
 
     #[cfg(target_os = "windows")]
     {
-        let normalized_path = preview_path.to_string_lossy().replace('\\', "/");
-        let relative_path = normalized_path.strip_prefix("./tempDir/")?;
-        let mut components: Vec<_> = relative_path.split('/').collect();
-        let preview_name = components.pop()?;
-        let source_name = preview_name.strip_suffix(" copy.png")?;
-        let root = components.first().copied()?;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
-        let mut source_path = if let Some(drive) = root.strip_prefix("drive_") {
-            components.remove(0);
+        let relative_path = preview_path.strip_prefix("./tempDir").ok()?;
+        let mut components: Vec<_> = relative_path
+            .components()
+            .map(|component| component.as_os_str().to_os_string())
+            .collect();
+        let preview_name = components.pop()?;
+        let mut source_name: Vec<u16> = preview_name.encode_wide().collect();
+        let suffix: Vec<u16> = " copy.png".encode_utf16().collect();
+        if !source_name.ends_with(&suffix) {
+            return None;
+        }
+        source_name.truncate(source_name.len() - suffix.len());
+        let source_name = std::ffi::OsString::from_wide(&source_name);
+        let root = components.remove(0);
+        let root_text = root.to_str()?;
+        let mut source_path = if let Some(drive) = root_text.strip_prefix("drive_") {
             std::path::PathBuf::from(format!("{drive}:\\"))
-        } else if root == "unc" {
-            if components.len() < 3 {
+        } else if root.as_os_str() == std::ffi::OsStr::new("unc") {
+            if components.len() < 2 {
                 return None;
             }
-            components.remove(0);
             let server = components.remove(0);
             let share = components.remove(0);
-            std::path::PathBuf::from(format!("\\\\{server}\\{share}"))
-        } else if root == "relative" {
-            components.remove(0);
+            let mut unc_path = std::ffi::OsString::from("\\\\");
+            unc_path.push(server);
+            unc_path.push("\\");
+            unc_path.push(share);
+            std::path::PathBuf::from(unc_path)
+        } else if root.as_os_str() == std::ffi::OsStr::new("relative") {
             std::path::PathBuf::new()
         } else {
-            components.remove(0);
-            std::path::PathBuf::from(root)
+            std::path::PathBuf::from(root.as_os_str())
         };
 
         for component in components {
@@ -284,7 +296,31 @@ pub fn go_thru_dir<T: DirectoryHashMap>(
     add_here: &mut T,
     method: &str,
     bitwise_paths: &mut Vec<std::path::PathBuf>,
+    excluded_paths: &[std::path::PathBuf],
 ) {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let is_excluded = excluded_paths
+        .iter()
+        .any(|excluded_path| walk_thru.starts_with(excluded_path));
+
+    #[cfg(target_os = "windows")]
+    let is_excluded = excluded_paths.iter().any(|excluded_path| {
+        let mut walk_components = walk_thru.components();
+        excluded_path
+            .components()
+            .all(|excluded_component| match walk_components.next() {
+                Some(walk_component) => os_str_eq_ignore_ascii_case(
+                    walk_component.as_os_str(),
+                    excluded_component.as_os_str(),
+                ),
+                None => false,
+            })
+    });
+
+    if is_excluded {
+        return;
+    }
+
     match std::fs::metadata(&walk_thru) {
         Ok(file_descriptor_info) => {
             if file_descriptor_info.is_dir() {
@@ -293,7 +329,13 @@ pub fn go_thru_dir<T: DirectoryHashMap>(
                         for file in go_thru {
                             match file {
                                 Ok(try_this) => {
-                                    go_thru_dir(try_this.path(), add_here, method, bitwise_paths);
+                                    go_thru_dir(
+                                        try_this.path(),
+                                        add_here,
+                                        method,
+                                        bitwise_paths,
+                                        excluded_paths,
+                                    );
                                 }
                                 Err(e) => {
                                     std::println!("Error {}", e);
@@ -320,6 +362,23 @@ pub fn go_thru_dir<T: DirectoryHashMap>(
             std::println!("Error Raised: {:#?}", e);
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn os_str_eq_ignore_ascii_case(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    let lowercase_ascii = |unit: u16| {
+        if (b'A' as u16..=b'Z' as u16).contains(&unit) {
+            unit + 32
+        } else {
+            unit
+        }
+    };
+
+    left.encode_wide()
+        .map(lowercase_ascii)
+        .eq(right.encode_wide().map(lowercase_ascii))
 }
 
 pub fn _find_and_set_ram_limit() {
