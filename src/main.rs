@@ -1,6 +1,5 @@
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 mod utils;
-use crate::utils::{misc, p_hashing::{self, PHashData}};
 
 fn main() {
     let m = clap::Command::new("TorrentChecker")
@@ -30,11 +29,13 @@ fn main() {
         )
         .get_matches();
 
-    misc::flush_the_cache(true);
+    utils::misc::flush_the_cache(true);
 
     if m.contains_id("pc") {
         let mut bitwise_paths = Vec::new();
-        let mut file_hash: std::collections::BTreeMap<sha2::digest::array::Array<u8, typenum::U32>, PHashData> = std::collections::BTreeMap::new();
+        let mut file_hash: std::collections::BTreeMap<
+            sha2::digest::array::Array<u8, typenum::U32>,
+            utils::p_hashing::PHashData> = std::collections::BTreeMap::new();
         match m.get_raw("pc") {
             Some(i) => {
                 for file in i {
@@ -46,15 +47,15 @@ fn main() {
                     );
                 }
             }
-            None => {
-                println!("Error parsing path in P Hash implementation of CLI args");
-            }
+            None => {println!("Error parsing path in P Hash implementation of CLI args");}
         };
-        p_hashing::find_collisions();
+        utils::p_hashing::find_collisions();
     } else if m.contains_id("bc") {
         let mut bitwise_paths = Vec::new();
-        let mut zero_tolerance_hash:
-            std::collections::BTreeMap<sha2::digest::array::Array<u8, typenum::U32 >, &str> = std::collections::BTreeMap::new();
+        let mut zero_tolerance_hash: std::collections::BTreeMap<
+            sha2::digest::array::Array<u8, typenum::U32>,
+            &str,
+        > = std::collections::BTreeMap::new();
         let temp_variable: Option<clap::parser::RawValues<'_>> = m.get_raw("bc");
         match temp_variable {
             Some(i) => {
@@ -76,5 +77,5 @@ fn main() {
             }
         };
     }
-    misc::flush_the_cache(false);
+    utils::misc::flush_the_cache(false);
 }
