@@ -304,18 +304,25 @@ pub fn go_thru_dir<T: DirectoryHashMap>(
         .any(|excluded_path| walk_thru.starts_with(excluded_path));
 
     #[cfg(target_os = "windows")]
-    let is_excluded = excluded_paths.iter().any(|excluded_path| {
-        let mut walk_components = walk_thru.components();
-        excluded_path
-            .components()
-            .all(|excluded_component| match walk_components.next() {
-                Some(walk_component) => os_str_eq_ignore_ascii_case(
-                    walk_component.as_os_str(),
-                    excluded_component.as_os_str(),
-                ),
-                None => false,
-            })
-    });
+    let is_excluded = {
+        let walk_components = walk_thru.components().collect::<Vec<_>>();
+        excluded_paths.iter().any(|excluded_path| {
+            let excluded_components = excluded_path.components().collect::<Vec<_>>();
+            !excluded_components.is_empty()
+                && walk_components
+                    .windows(excluded_components.len())
+                    .any(|components| {
+                        components.iter().zip(&excluded_components).all(
+                            |(walk_component, excluded_component)| {
+                                os_str_eq_ignore_ascii_case(
+                                    walk_component.as_os_str(),
+                                    excluded_component.as_os_str(),
+                                )
+                            },
+                        )
+                    })
+        })
+    };
 
     if is_excluded {
         return;
